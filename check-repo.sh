@@ -40,10 +40,29 @@ for variant in Packages Packages.gz Packages.bz2; do
 done
 
 # And that every package's Filename actually resolves.
-grep '^Filename:' "$TMP/Packages" | awk '{print $2}' | while read -r rel; do
-    code=$(curl -o /dev/null -sw '%{http_code}' -I "$BASE/$rel")
-    [ "$code" = "200" ] && echo "  $rel: $code" || { echo "  $rel: $code FAIL"; FAIL=1; }
-done
+#
+# Filename may be relative to the repo (Pages-hosted) or an absolute URL (a
+# GitHub release asset, so downloads get counted). Release assets answer with a
+# 302 to objects.githubusercontent.com, so redirects must be followed or every
+# counted package reads as broken.
+#
+# Fed by process substitution, not a pipe: a `while` on the right of a pipe runs
+# in a subshell, so FAIL=1 was being set and then discarded -- this loop used to
+# report failures and still exit 0.
+while read -r rel; do
+    case "$rel" in
+        http://*|https://*) url="$rel" ;;
+        *)                  url="$BASE/$rel" ;;
+    esac
+    # HEAD, so verifying the repo does not inflate the download count.
+    code=$(curl -o /dev/null -sw '%{http_code}' -IL "$url")
+    if [ "$code" = "200" ]; then
+        echo "  $rel: $code"
+    else
+        echo "  $rel: $code FAIL"
+        FAIL=1
+    fi
+done < <(grep '^Filename:' "$TMP/Packages" | awk '{print $2}')
 
 rm -rf "$TMP"
 [ "$FAIL" = 0 ] && echo "repo is consistent" || echo "repo has problems"

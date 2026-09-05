@@ -26,6 +26,16 @@ cd "$REPO"
 # tinguishable from the depiction being broken.
 PUBLIC="https://dangkhoa116.github.io/hotspotpro"
 
+# Optional: make the LAN repo hand out the real GitHub release URL instead of a
+# local file, so an install here exercises exactly the absolute-Filename path
+# the public repo will use. This is the rehearsal for HP_RELEASE_TAG in
+# repo-build.sh -- prove Sileo follows it here before the public repo depends
+# on it.
+#
+#   HP_RELEASE_TAG=v0.5.2 ./repo-publish.sh
+RELEASE_TAG="${HP_RELEASE_TAG:-}"
+GITHUB="https://github.com/dangkhoa116/hotspotpro"
+
 for deb in *.deb; do
     [ -f "$deb" ] || continue
     # Strip any existing Filename/Size/hash lines from the embedded control and
@@ -33,7 +43,16 @@ for deb in *.deb; do
     dpkg-deb -f "$deb" |
         grep -v -E '^(Filename|Size|MD5sum|SHA1|SHA256|Depiction|SileoDepiction|Icon):' >> Packages
     {
-        echo "Filename: ./$deb"
+        case "$deb" in
+            *hotspotpro*)
+                if [ -n "$RELEASE_TAG" ]; then
+                    echo "Filename: $GITHUB/releases/download/$RELEASE_TAG/$deb"
+                else
+                    echo "Filename: ./$deb"
+                fi
+                ;;
+            *) echo "Filename: ./$deb" ;;
+        esac
         echo "Size: $(stat -c%s "$deb")"
         echo "MD5sum: $(md5sum "$deb" | cut -d' ' -f1)"
         echo "SHA1: $(sha1sum "$deb" | cut -d' ' -f1)"

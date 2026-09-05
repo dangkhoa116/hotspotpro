@@ -22,6 +22,19 @@ fi
 GITHUB="${GITHUB_URL:-$(cat "$SRC/github-url.txt" 2>/dev/null || echo "https://github.com/CHANGEME/HotspotPro")}"
 VERSION="$(grep '^Version:' "$SRC/control" | cut -d' ' -f2)"
 
+# Optional: serve the packages from a GitHub release instead of from Pages.
+#
+#   HP_RELEASE_TAG=v0.5.2 ./repo-build.sh
+#
+# Pages keeps no access logs, so a deb served from docs/debs/ can never be
+# counted. GitHub counts every fetch of a release asset and reports it through
+# the API, which is what stats.ps1 reads. Package managers accept an absolute
+# URL in Filename, so this changes only where the bytes come from.
+#
+# The debs are still copied into docs/debs/ either way: they cost nothing, and
+# they are the fallback if a release asset is ever deleted.
+RELEASE_TAG="${HP_RELEASE_TAG:-}"
+
 mkdir -p "$DEBS"
 rm -f "$DEBS"/*.deb
 cp -f "$SRC"/release/*.deb "$DEBS"/
@@ -52,7 +65,11 @@ for deb in debs/*.deb; do
     dpkg-deb -f "$deb" |
         grep -v -E '^(Filename|Size|MD5sum|SHA1|SHA256|Depiction|SileoDepiction|Icon):' >> Packages
     {
-        echo "Filename: $deb"
+        if [ -n "$RELEASE_TAG" ]; then
+            echo "Filename: $GITHUB/releases/download/$RELEASE_TAG/$(basename "$deb")"
+        else
+            echo "Filename: $deb"
+        fi
         echo "Size: $(stat -c%s "$deb")"
         echo "MD5sum: $(md5sum "$deb" | cut -d' ' -f1)"
         echo "SHA1: $(sha1sum "$deb" | cut -d' ' -f1)"
@@ -98,5 +115,10 @@ md5_line()  { echo " $(md5sum "$1"    | cut -d' ' -f1) $(stat -c%s "$1") $1"; }
     [ -f Packages.bz2 ] && hash_line Packages.bz2
 } > Release
 
+if [ -n "$RELEASE_TAG" ]; then
+    echo "packages point at release $RELEASE_TAG (downloads counted by GitHub)"
+else
+    echo "packages served from Pages (downloads NOT counted; set HP_RELEASE_TAG to count)"
+fi
 echo "repo written to $DOCS for $BASE_URL"
 grep -E '^(Package|Version|Architecture|Filename): ' Packages | sed 's/^/  /'
