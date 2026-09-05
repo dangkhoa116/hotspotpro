@@ -78,7 +78,7 @@
       "views": [
         {
           "class": "DepictionMarkdownView",
-          "markdown": "**0.5.2**\n• Per-device data limits that cut a device off when it goes over\n• Device pages showing usage, address and status\n• Usage, connected devices and limits in the stock Personal Hotspot pane"
+          "markdown": "**0.5.5**\n• Per-device data limits that cut a device off when it goes over\n• Device pages showing usage, address and status\n• Usage, connected devices and limits in the stock Personal Hotspot pane"
         }
       ]
     }
