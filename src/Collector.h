@@ -113,6 +113,15 @@ NSArray<NSDictionary *> *HPCopyInterfaceCandidates(NSArray<NSDictionary *> *ifac
 /// reported "Hotspot off" for the first moments after the switch was flipped.
 BOOL HPHotspotIsActive(NSArray<NSDictionary *> *ifaces);
 
+/// When the root daemon last saw a frame from each client MAC.
+///
+/// The ARP table says a client *was* here, never that it left — an entry sits
+/// there being counted down for the rest of its lifetime after the device is
+/// gone. A captured frame is positive evidence of presence with a timestamp,
+/// which is what "connected right now" actually needs. Empty when the daemon is
+/// not running, so callers must treat absence as "unknown", not "gone".
+NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void);
+
 /// `net.inet.ip.forwarding` on its own: one sysctl, no table walk and no
 /// allocation. Use it to decide whether a full sample is worth taking at all;
 /// use HPHotspotIsActive() when you already have the interface list.
@@ -157,6 +166,7 @@ extern NSString *const HPDevNameKey;      // NSString, from the DHCP lease
 extern NSString *const HPDevIfIndexKey;   // NSNumber
 extern NSString *const HPDevIfNameKey;    // NSString
 extern NSString *const HPDevLeaseEndKey;  // NSDate
+extern NSString *const HPDevExpiresKey;   // NSNumber, unix time the ARP entry dies (0 = permanent)
 extern NSString *const HPDevBytesKey;     // NSNumber, bytes this period
 
 /// Live ARP neighbours, via sysctl NET_RT_FLAGS with RTF_LLINFO.

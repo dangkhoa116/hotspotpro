@@ -144,7 +144,32 @@ static HPSettingsHelper *gHelper;
 /// compute, and only presence needs to be current.
 static NSArray *HPLiveConnectedDevices(void) {
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
-    return HPCopyConnectedDevices(HPHotspotInterfaceNames(ifaces)) ?: @[];
+    NSArray *arp = HPCopyConnectedDevices(HPHotspotInterfaceNames(ifaces)) ?: @[];
+
+    // The ARP table records that a client was here; it never records that one
+    // left. A departed device's entry simply stops being refreshed and sits
+    // there counting down, so it kept appearing as connected for minutes after
+    // disconnecting. The daemon's tap supplies the missing half: a frame
+    // actually received, with a timestamp. Anything silent for a while is gone.
+    //
+    // rmx_expire looks like it should answer this and does not reliably — how
+    // often the kernel refreshes it is a detail nobody here has measured, and a
+    // wrong guess would hide devices that are genuinely connected.
+    NSDictionary<NSString *, NSDate *> *lastSeen = HPCopyDaemonLastSeen();
+    if (lastSeen.count == 0) return arp;   // no daemon data: unknown, not gone
+
+    static const NSTimeInterval kSilentCutoff = 90.0;
+    NSDate *now = [NSDate date];
+    NSMutableArray *present = [NSMutableArray array];
+    for (NSDictionary *dev in arp) {
+        NSDate *seen = lastSeen[dev[HPDevMacKey]];
+        // A MAC the daemon has no record of has usually just joined and not
+        // been flushed yet. Keep it: never invent a departure from silence.
+        if (!seen || [now timeIntervalSinceDate:seen] <= kSilentCutoff) {
+            [present addObject:dev];
+        }
+    }
+    return present;
 }
 
 /// "Is the hotspot on", smoothed.
@@ -188,7 +213,9 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
     if (!HPHotspotIsActiveSmoothed(ifaces)) return @"Hotspot off";
 
-    NSUInteger count = HPCopyConnectedDevices(HPHotspotInterfaceNames(ifaces)).count;
+    // Same source as the device rows, or the count in this row and the number
+    // of rows below it could disagree.
+    NSUInteger count = HPLiveConnectedDevices().count;
     if (count == 0) return @"On · no devices";
     return count == 1 ? @"1 device connected"
                       : [NSString stringWithFormat:@"%lu devices connected",

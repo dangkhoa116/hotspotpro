@@ -30,6 +30,7 @@ NSString *const HPDevNameKey     = @"deviceName";
 NSString *const HPDevIfIndexKey  = @"ifIndex";
 NSString *const HPDevIfNameKey   = @"ifName";
 NSString *const HPDevLeaseEndKey = @"leaseEnd";
+NSString *const HPDevExpiresKey  = @"arpExpires";
 NSString *const HPDevBytesKey    = @"bytes";
 
 #pragma mark - Kernel structures
@@ -370,11 +371,17 @@ NSArray<NSDictionary *> *HPCopyArpEntries(void) {
             char ifname[IFNAMSIZ] = {0};
             if_indextoname(sdl->sdl_index, ifname);
 
+            // rmx_expire is the absolute time this entry dies. It is the only
+            // clue the ARP table gives about freshness: a client that has left
+            // is not removed, it simply stops being refreshed, so the entry sits
+            // there counting down for the rest of its lifetime. Zero means a
+            // permanent entry, which never ages.
             [out addObject:@{
                 HPDevMacKey     : mac,
                 HPDevIPKey      : @(ipbuf),
                 HPDevIfIndexKey : @(sdl->sdl_index),
                 HPDevIfNameKey  : @(ifname),
+                HPDevExpiresKey : @(rtm->rtm_rmx.rmx_expire),
             }];
         }
         next += rtm->rtm_msglen;
@@ -532,6 +539,13 @@ NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
                               @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
     NSDictionary *bytes = file[@"bytesByMac"];
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
+}
+
+NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void) {
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
+                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *seen = file[@"lastSeenByMac"];
+    return [seen isKindOfClass:[NSDictionary class]] ? seen : @{};
 }
 
 #pragma mark - Helpers
