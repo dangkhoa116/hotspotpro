@@ -1,5 +1,6 @@
 {
   "minVersion": "0.1",
+  "class": "DepictionTabView",
   "headerImage": "https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png",
   "tintColor": "#17a06f",
   "tabs": [

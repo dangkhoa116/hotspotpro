@@ -20,17 +20,31 @@ fi
 cd "$REPO"
 : > Packages
 
+# Depiction and icon are served from the public repo. Pointing the dev repo at
+# them means a package installed from the LAN looks exactly like what users see,
+# rather than a bare entry with no screenshots — which is otherwise indis-
+# tinguishable from the depiction being broken.
+PUBLIC="https://dangkhoa116.github.io/hotspotpro"
+
 for deb in *.deb; do
     [ -f "$deb" ] || continue
     # Strip any existing Filename/Size/hash lines from the embedded control and
     # emit fresh ones for this file.
-    dpkg-deb -f "$deb" | grep -v -E '^(Filename|Size|MD5sum|SHA1|SHA256):' >> Packages
+    dpkg-deb -f "$deb" |
+        grep -v -E '^(Filename|Size|MD5sum|SHA1|SHA256|Depiction|SileoDepiction|Icon):' >> Packages
     {
         echo "Filename: ./$deb"
         echo "Size: $(stat -c%s "$deb")"
         echo "MD5sum: $(md5sum "$deb" | cut -d' ' -f1)"
         echo "SHA1: $(sha1sum "$deb" | cut -d' ' -f1)"
         echo "SHA256: $(sha256sum "$deb" | cut -d' ' -f1)"
+        case "$deb" in
+            *hotspotpro*)
+                echo "Icon: $PUBLIC/CydiaIcon.png"
+                echo "Depiction: $PUBLIC/depiction.html"
+                echo "SileoDepiction: $PUBLIC/depiction.json"
+                ;;
+        esac
         echo
     } >> Packages
 done

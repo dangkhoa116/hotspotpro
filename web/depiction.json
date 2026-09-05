@@ -1,5 +1,6 @@
 {
   "minVersion": "0.1",
+  "class": "DepictionTabView",
   "headerImage": "@BASE_URL@/CydiaIcon.png",
   "tintColor": "#17a06f",
   "tabs": [
