@@ -1,6 +1,6 @@
 {
   "minVersion": "0.1",
-  "headerImage": "https://dangkhoa116.github.io/HotspotPro/CydiaIcon.png",
+  "headerImage": "https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png",
   "tintColor": "#17a06f",
   "tabs": [
     {
@@ -47,7 +47,7 @@
         {
           "class": "DepictionTableButtonView",
           "title": "Source on GitHub",
-          "action": "https://github.com/dangkhoa116/HotspotPro",
+          "action": "https://github.com/dangkhoa116/hotspotpro",
           "openExternal": true
         }
       ]
