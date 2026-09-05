@@ -70,4 +70,5 @@ typedef enum {
 // The specifier that pushed this controller, set by the framework on the way in.
 - (void)setSpecifier:(PSSpecifier *)specifier;
 - (PSSpecifier *)specifier;
+- (void)pushController:(id)controller;
 @end

@@ -782,8 +782,8 @@ static NSArray *HPBuildDeviceRows(void) {
                                                           target:helper
                                                              set:NULL
                                                              get:@selector(deviceValue:)
-                                                          detail:[HPDeviceListController class]
-                                                            cell:PSLinkCell
+                                                          detail:nil
+                                                            cell:PSTitleValueCell
                                                             edit:nil];
         [row setProperty:@YES forKey:@"hpOurs"];
         [row setProperty:@YES forKey:@"hpValueRow"];
@@ -823,8 +823,8 @@ static NSArray *HPBuildDeviceRows(void) {
                                                           target:helper
                                                              set:NULL
                                                              get:@selector(deviceValue:)
-                                                          detail:[HPDeviceListController class]
-                                                            cell:PSLinkCell
+                                                          detail:nil
+                                                            cell:PSTitleValueCell
                                                             edit:nil];
         [row setProperty:@YES forKey:@"hpOurs"];
         [row setProperty:@YES forKey:@"hpValueRow"];
@@ -951,6 +951,30 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
     } @catch (NSException *e) {
         HPLog(@"device row update failed: %@", e);
     }
+}
+
+/// Open a device's own page.
+///
+/// Pushed by hand rather than through the specifier's detail class, because a
+/// device row has to be a PSTitleValueCell: that is the only cell that shows
+/// the row's value, and the value is the whole point — "28.8 MB · 172.20.10.2".
+/// Making the row a PSLinkCell to get automatic pushing silently dropped that
+/// text, leaving a device row with a name and nothing else.
+- (void)tableView:(UITableView *)tableView
+    didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    @try {
+        PSSpecifier *spec = [self specifierAtIndexPath:indexPath];
+        if ([[spec propertyForKey:@"hpDeviceRow"] boolValue]) {
+            [tableView deselectRowAtIndexPath:indexPath animated:YES];
+            HPDeviceListController *device = [[HPDeviceListController alloc] init];
+            [device setSpecifier:spec];
+            [self pushController:device];
+            return;
+        }
+    } @catch (NSException *e) {
+        HPLog(@"device row tap failed: %@", e);
+    }
+    [super tableView:tableView didSelectRowAtIndexPath:indexPath];
 }
 
 /// Add or remove everything the tracking switch governs.
