@@ -14,9 +14,9 @@ Size: 88606
 MD5sum: 2950a7ea43e36f4e517a508e28a34faa
 SHA1: a5a83746a0628cb3f08c36e7e1cd8d3504a5e3b5
 SHA256: 33288c5714d0ba769db02cafac5d71d596e3cde11bd30797af0e84a6111ac865
-Icon: https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png
-Depiction: https://dangkhoa116.github.io/hotspotpro/depiction.html
-SileoDepiction: https://dangkhoa116.github.io/hotspotpro/depiction.json
+Icon: https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png?v=0.5.2
+Depiction: https://dangkhoa116.github.io/hotspotpro/depiction.html?v=0.5.2
+SileoDepiction: https://dangkhoa116.github.io/hotspotpro/depiction.json?v=0.5.2
 Homepage: https://dangkhoa116.github.io/hotspotpro
 
 Package: com.dangkhoa.hotspotpro
@@ -35,8 +35,8 @@ Size: 88680
 MD5sum: bbd5293fb66200dd41955a13ea399e0b
 SHA1: fb5c823ca26fe0506a25a3385e813467126b7fd5
 SHA256: 297b33b2d51109269d7c83c61324d18ea9daf66699deb5a03703a12c8b2fdf73
-Icon: https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png
-Depiction: https://dangkhoa116.github.io/hotspotpro/depiction.html
-SileoDepiction: https://dangkhoa116.github.io/hotspotpro/depiction.json
+Icon: https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png?v=0.5.2
+Depiction: https://dangkhoa116.github.io/hotspotpro/depiction.html?v=0.5.2
+SileoDepiction: https://dangkhoa116.github.io/hotspotpro/depiction.json?v=0.5.2
 Homepage: https://dangkhoa116.github.io/hotspotpro
 
