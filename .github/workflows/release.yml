@@ -1,0 +1,43 @@
+name: Release
+
+# Publishing a tag creates the GitHub release and attaches the debs to it.
+#
+# The point is download counting: GitHub Pages keeps no access logs, so a deb
+# served from docs/ can never be counted, while GitHub counts every fetch of a
+# release asset. Doing it here rather than by hand also means the release can be
+# created from a machine that only has SSH -- uploading assets needs the API,
+# and the runner already has a token for it.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write        # required to create a release and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release with both packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          # docs/debs holds the packages the repo serves, so the release and the
+          # APT repo are guaranteed to be the same bytes.
+          ls -la docs/debs/*.deb
+
+          gh release create "$GITHUB_REF_NAME" docs/debs/*.deb \
+            --title "HotspotPro $GITHUB_REF_NAME" \
+            --notes "Personal Hotspot usage, connected devices and data limits.
+
+          Install from the repo instead of downloading by hand:
+          https://dangkhoa116.github.io/hotspotpro/
+
+          - \`iphoneos-arm64\` — rootless (Dopamine, palera1n rootless, Xina)
+          - \`iphoneos-arm\` — rootful (unc0ver, checkra1n, palera1n rootful)
+
+          Both carry arm64 and arm64e slices."
