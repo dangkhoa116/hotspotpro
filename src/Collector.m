@@ -541,6 +541,13 @@ NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
 }
 
+NSDate *HPDaemonLastFlush(void) {
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
+                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDate *updated = file[@"updated"];
+    return [updated isKindOfClass:[NSDate class]] ? updated : nil;
+}
+
 NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void) {
     NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
                               @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];

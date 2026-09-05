@@ -122,6 +122,13 @@ BOOL HPHotspotIsActive(NSArray<NSDictionary *> *ifaces);
 /// not running, so callers must treat absence as "unknown", not "gone".
 NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void);
 
+/// When the daemon last wrote its counters — every 10s while its tap is open,
+/// whether or not any traffic arrived. This is the heartbeat that says "the
+/// silence of a given client means something", which per-client timestamps
+/// cannot: when the last client leaves, all of those go stale together.
+/// Nil when the daemon has never run.
+NSDate *HPDaemonLastFlush(void);
+
 /// `net.inet.ip.forwarding` on its own: one sysctl, no table walk and no
 /// allocation. Use it to decide whether a full sample is worth taking at all;
 /// use HPHotspotIsActive() when you already have the interface list.

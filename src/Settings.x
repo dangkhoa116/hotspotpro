@@ -158,23 +158,27 @@ static NSArray *HPLiveConnectedDevices(void) {
     NSDictionary<NSString *, NSDate *> *lastSeen = HPCopyDaemonLastSeen();
     if (lastSeen.count == 0) return arp;   // no daemon data: unknown, not gone
 
-    static const NSTimeInterval kSilentCutoff = 90.0;
+    // How long a client may go unheard before it is treated as gone. Its last
+    // frame is stamped at the next flush, up to 10s later, so the real delay is
+    // this plus about ten seconds.
+    static const NSTimeInterval kSilentCutoff = 30.0;
+    // How stale the daemon's own heartbeat may be before its silence stops
+    // meaning anything.
+    static const NSTimeInterval kDaemonStale = 30.0;
     NSDate *now = [NSDate date];
 
-    // Only trust this filter while the daemon is demonstrably counting. Its tap
-    // closes whenever the bridge flaps — which it does, repeatedly, around the
-    // start of a session — and every timestamp then ages at once. Filtering on
-    // stale data hid devices that were connected the whole time, which is a
-    // worse failure than briefly listing one that has left.
-    NSDate *freshest = nil;
-    for (NSString *mac in lastSeen) {
-        NSDate *d = lastSeen[mac];
-        if ([d isKindOfClass:[NSDate class]] &&
-            (!freshest || [d compare:freshest] == NSOrderedDescending)) {
-            freshest = d;
-        }
-    }
-    if (!freshest || [now timeIntervalSinceDate:freshest] > kSilentCutoff) return arp;
+    // Only trust this filter while the daemon is demonstrably capturing: its tap
+    // closes whenever the bridge flaps, and every per-client timestamp then ages
+    // at once, which once hid devices that were connected throughout.
+    //
+    // The gate is the daemon's own flush time, not the freshest per-client
+    // stamp. Those are the same thing until the last client leaves — at which
+    // point traffic stops, every client stamp goes stale together, and a
+    // freshest-stamp gate would switch the filter off exactly when it was needed
+    // and leave the departed device on screen. The flush heartbeat keeps
+    // ticking every 10s regardless of traffic.
+    NSDate *heartbeat = HPDaemonLastFlush();
+    if (!heartbeat || [now timeIntervalSinceDate:heartbeat] > kDaemonStale) return arp;
     NSMutableArray *present = [NSMutableArray array];
     for (NSDictionary *dev in arp) {
         NSDate *seen = lastSeen[dev[HPDevMacKey]];
