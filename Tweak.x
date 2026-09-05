@@ -142,6 +142,11 @@ static void HPStartCollector(void) {
 /// hotspot clients at a handful, but the historical list is unbounded.
 static const NSUInteger kHPMaxOfflineRows = 6;
 
+/// Tip jar. Set this to a Ko-fi / Buy Me a Coffee / PayPal.me link before
+/// release; while it is empty the row is not shown at all, so an unconfigured
+/// build never presents a button that goes nowhere.
+static NSString *const kHPDonateURL = @"";
+
 static NSArray *HPBuildDeviceRows(void);
 static void HPReloadValues(PSListController *pane);
 
@@ -157,6 +162,7 @@ static __weak PSListController *gUsagePaneRef;
 + (instancetype)shared;
 - (void)setResetDayValue:(id)value specifier:(PSSpecifier *)spec;
 - (void)performReset;
+- (void)openDonateLink:(PSSpecifier *)spec;
 @end
 
 @implementation HPSettingsHelper
@@ -355,6 +361,16 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     }]];
 
     [pane presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)openDonateLink:(PSSpecifier *)spec {
+    @try {
+        NSURL *url = [NSURL URLWithString:kHPDonateURL];
+        if (!url) return;
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+    } @catch (NSException *e) {
+        HPLog(@"donate link failed: %@", e);
+    }
 }
 
 - (void)performReset {
@@ -618,6 +634,28 @@ static NSArray *HPBuildBodySpecifiers(void) {
     [reset setTarget:helper];
     [reset setButtonAction:@selector(resetNow:)];
     [specs addObject:reset];
+
+    // --- tip jar ----------------------------------------------------------
+    // Free tweak, no paywall, no nag: one row at the very bottom, and none at
+    // all in a build with no link configured.
+    if (kHPDonateURL.length) {
+        [specs addObject:HPGroup(nil,
+                                 @"HotspotPro is free and open source. If it saved "
+                                  "you an argument about who used all the data, a "
+                                  "beer is always welcome.")];
+
+        PSSpecifier *donate = [PSSpecifier preferenceSpecifierNamed:@"Buy Me a Beer 🍺"
+                                                             target:helper
+                                                                set:NULL
+                                                                get:NULL
+                                                             detail:nil
+                                                               cell:PSButtonCell
+                                                               edit:nil];
+        [donate setProperty:@YES forKey:@"hpOurs"];
+        [donate setTarget:helper];
+        [donate setButtonAction:@selector(openDonateLink:)];
+        [specs addObject:donate];
+    }
 
     // Tag everything the switch governs, so it can be pulled out and put back
     // in one move when tracking is toggled.

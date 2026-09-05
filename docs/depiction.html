@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HotspotPro</title>
+<style>
+  :root { --bg:#fff; --ink:#12161c; --muted:#5d6470; --line:#e3e6ea; --accent:#17a06f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#171b21; --ink:#eef1f5; --muted:#9aa3af; --line:#262c34; --accent:#34d399; }
+  }
+  body {
+    margin:0; padding:18px 16px 40px; background:var(--bg); color:var(--ink);
+    font:15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h2 { font-size:17px; margin:22px 0 8px; }
+  h2:first-child { margin-top:0; }
+  ul { padding-left:20px; margin:8px 0; }
+  li { margin:5px 0; }
+  hr { border:0; border-top:1px solid var(--line); margin:20px 0; }
+  .muted { color:var(--muted); font-size:14px; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+
+<h2>What it adds</h2>
+<p>Personal Hotspot tells you almost nothing: no data total, no list of who is
+connected, no cap. HotspotPro adds all three, inside the stock
+Settings → Personal Hotspot pane.</p>
+<ul>
+  <li><strong>Data used this period</strong>, with a monthly reset day you choose</li>
+  <li><strong>Who is connected</strong> — name, address, and how much each device used</li>
+  <li><strong>A limit</strong> that warns you, and <strong>per-device limits</strong> that cut a device off</li>
+</ul>
+
+<hr>
+
+<h2>Privacy</h2>
+<p>Everything stays on your device; nothing is uploaded. To attribute bytes to
+devices, a background helper reads packet <strong>headers</strong> on the
+tethering bridge — 14 bytes per frame, the Ethernet header, never packet
+contents. It stores client MAC addresses, the names devices announce over DHCP,
+and byte counts. Records are forgotten after 45 days, and switching
+<em>Track Hotspot Usage</em> off closes the tap entirely.</p>
+
+<hr>
+
+<h2>Compatibility</h2>
+<p class="muted">iOS 14+, rootless and rootful, arm64 and arm64e.<br>
+Tested on iOS 16.7.15 (iPhone 8 Plus, Dopamine).</p>
+
+<p class="muted"><a href="https://github.com/CHANGEME/HotspotPro">Source on GitHub</a> · MIT · v0.5.2</p>
+
+</body>
+</html>

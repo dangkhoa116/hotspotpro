@@ -1,0 +1,66 @@
+{
+  "minVersion": "0.1",
+  "headerImage": "@BASE_URL@/CydiaIcon.png",
+  "tintColor": "#17a06f",
+  "tabs": [
+    {
+      "tabname": "Details",
+      "class": "DepictionStackView",
+      "views": [
+        {
+          "class": "DepictionSubheaderView",
+          "title": "What it adds"
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "Personal Hotspot tells you almost nothing: no data total, no list of who is connected, no cap. HotspotPro adds all three, inside the stock Settings → Personal Hotspot pane.\n\n• **Data used this period**, with a monthly reset day you choose\n• **Who is connected** — name, address, and how much each device has used\n• **A limit** that warns you, and **per-device limits** that cut a device off"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "Privacy"
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "Everything stays on your device; nothing is uploaded. To attribute bytes to devices, a background helper reads packet **headers** on the tethering bridge — 14 bytes per frame, the Ethernet header, never packet contents. It stores client MAC addresses, the names devices announce over DHCP, and byte counts. Records are forgotten after 45 days, and switching *Track Hotspot Usage* off closes the tap entirely."
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "Compatibility"
+        },
+        {
+          "class": "DepictionTableTextView",
+          "title": "Supports",
+          "text": "iOS 14+, rootless and rootful"
+        },
+        {
+          "class": "DepictionTableTextView",
+          "title": "Architectures",
+          "text": "arm64 and arm64e"
+        },
+        {
+          "class": "DepictionTableTextView",
+          "title": "Tested on",
+          "text": "iOS 16.7.15, iPhone 8 Plus"
+        },
+        {
+          "class": "DepictionTableButtonView",
+          "title": "Source on GitHub",
+          "action": "@GITHUB@",
+          "openExternal": true
+        }
+      ]
+    },
+    {
+      "tabname": "Changelog",
+      "class": "DepictionStackView",
+      "views": [
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**@VERSION@**\n• Per-device data limits that cut a device off when it goes over\n• Device pages showing usage, address and status\n• Usage, connected devices and limits in the stock Personal Hotspot pane"
+        }
+      ]
+    }
+  ]
+}
