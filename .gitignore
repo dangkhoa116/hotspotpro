@@ -1,0 +1,6 @@
+.theos/
+packages/
+release/
+repo/
+*.log
+hotspotpro-bin

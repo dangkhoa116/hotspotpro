@@ -1,0 +1,26 @@
+#!/bin/sh
+# Let the daemon lift its route blocks BEFORE it is stopped.
+#
+# Blocks are routing-table entries owned by the kernel, not by the process, so
+# stopping the daemon first would leave a capped device cut off with nothing
+# left running that knows why. Emptying the blocklist and giving the daemon one
+# poll interval to act on it means it tears its own routes down on the way out.
+# (A reboot would also clear them, but nobody should have to discover that.)
+
+PREFIX=""
+[ -d /var/jb ] && PREFIX="/var/jb"
+
+echo '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>blocked</key><array/></dict></plist>' \
+    > /var/mobile/Library/Caches/hotspotpro-blocklist.plist 2>/dev/null
+
+sleep 3
+
+launchctl bootout system/com.dangkhoa.hotspotpro >/dev/null 2>&1
+launchctl unload "$PREFIX/Library/LaunchDaemons/com.dangkhoa.hotspotpro.plist" >/dev/null 2>&1
+
+rm -f /var/mobile/Library/Caches/hotspotpro-blocklist.plist
+rm -f /var/mobile/Library/Caches/hotspotpro-installed.plist
+
+exit 0

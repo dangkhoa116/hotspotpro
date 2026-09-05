@@ -1,0 +1,47 @@
+#!/bin/sh
+# Install and start the per-device counting daemon.
+#
+# The LaunchDaemon plist has to name an absolute path to the binary, and that
+# path differs between jailbreak types (/var/jb/usr/libexec on rootless, plain
+# /usr/libexec on rootful). dpkg does not rewrite file contents, so the plist is
+# written here from the prefix that actually exists on this device rather than
+# shipped twice.
+
+PREFIX=""
+[ -d /var/jb ] && PREFIX="/var/jb"
+
+PLIST="$PREFIX/Library/LaunchDaemons/com.dangkhoa.hotspotpro.plist"
+BINARY="$PREFIX/usr/libexec/hotspotprod"
+
+mkdir -p "$PREFIX/Library/LaunchDaemons"
+
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.dangkhoa.hotspotpro</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>${BINARY}</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>UserName</key>
+	<string>root</string>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+</dict>
+</plist>
+EOF
+
+chmod 0644 "$PLIST"
+
+# Bootstrapping a label that is already loaded is an error, so drop it first.
+launchctl bootout system/com.dangkhoa.hotspotpro >/dev/null 2>&1
+launchctl bootstrap system "$PLIST" >/dev/null 2>&1 || launchctl load "$PLIST" >/dev/null 2>&1
+
+exit 0
