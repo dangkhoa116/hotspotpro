@@ -9,3 +9,9 @@ hotspotpro-bin
 donate-url.txt
 repo-url.txt
 github-url.txt
+
+# Notes stay on this machine and off GitHub. README.md and RELEASING.md still
+# exist locally -- they are ignored, not deleted. If one is ever wanted on
+# GitHub again, `git add -f` it.
+*.md
+restore-md.sh
