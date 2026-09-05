@@ -65,6 +65,7 @@ for deb in debs/*.deb; do
     } >> Packages
 done
 
+rm -f Packages.gz Packages.bz2
 gzip -9 -c -n Packages > Packages.gz
 command -v bzip2 >/dev/null && bzip2 -9 -c Packages > Packages.bz2 || true
 
@@ -80,12 +81,18 @@ md5_line()  { echo " $(md5sum "$1"    | cut -d' ' -f1) $(stat -c%s "$1") $1"; }
     echo "Architectures: iphoneos-arm iphoneos-arm64"
     echo "Components: main"
     echo "Description: Personal Hotspot usage, connected devices and data limits"
+    # EVERY compressed form that exists must be listed here. Sileo prefers
+    # Packages.bz2, and a file present on the server but missing from Release
+    # fails its integrity check with "Hash for Packages.bz2 is invalid" — which
+    # reads like corruption but really means "not declared".
     echo "MD5Sum:"
     md5_line Packages
     md5_line Packages.gz
+    [ -f Packages.bz2 ] && md5_line Packages.bz2
     echo "SHA256:"
     hash_line Packages
     hash_line Packages.gz
+    [ -f Packages.bz2 ] && hash_line Packages.bz2
 } > Release
 
 echo "repo written to $DOCS for $BASE_URL"
