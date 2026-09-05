@@ -8,6 +8,25 @@
       "class": "DepictionStackView",
       "views": [
         {
+          "class": "DepictionScreenshotsView",
+          "itemCornerRadius": 8,
+          "itemSize": "{160, 284}",
+          "screenshots": [
+            {
+              "url": "@BASE_URL@/screenshots/1-hotspot-pane.jpg",
+              "accessibilityText": "The Hotspot Usage row in the stock Personal Hotspot pane"
+            },
+            {
+              "url": "@BASE_URL@/screenshots/2-usage.jpg",
+              "accessibilityText": "Usage this period, connected devices and the data limit"
+            },
+            {
+              "url": "@BASE_URL@/screenshots/3-device-limit.jpg",
+              "accessibilityText": "A single device's usage, address and its own limit"
+            }
+          ]
+        },
+        {
           "class": "DepictionSubheaderView",
           "title": "What it adds"
         },

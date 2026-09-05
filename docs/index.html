@@ -46,6 +46,14 @@
   }
   ul { padding-left: 20px; }
   li { margin: 6px 0; }
+  .shots {
+    display: flex; gap: 12px; overflow-x: auto; margin-bottom: 18px;
+    padding-bottom: 4px; -webkit-overflow-scrolling: touch;
+  }
+  .shots img {
+    width: 190px; flex: 0 0 auto; border-radius: 12px;
+    border: 1px solid var(--line);
+  }
   footer { color: var(--muted); font-size: 14px; text-align: center; margin-top: 32px; }
   a { color: var(--accent); }
 </style>
@@ -68,6 +76,12 @@
     <p style="margin-bottom:0">
       <a class="btn" id="sileo-link" href="sileo://source/https://dangkhoa116.github.io/hotspotpro/">Add to Sileo</a>
     </p>
+  </div>
+
+  <div class="shots">
+    <img src="screenshots/1-hotspot-pane.jpg" alt="The Hotspot Usage row in the stock Personal Hotspot pane">
+    <img src="screenshots/2-usage.jpg" alt="Usage this period, connected devices and the data limit">
+    <img src="screenshots/3-device-limit.jpg" alt="A single device's usage, address and its own limit">
   </div>
 
   <div class="card">
