@@ -253,7 +253,7 @@ NSArray<NSString *> *HPHotspotInterfaceNames(NSArray<NSDictionary *> *ifaces) {
 
 /// The kernel turns IP forwarding on while Internet Sharing is enabled and off
 /// again afterwards. Measured: 1 with the hotspot on, 0 with it off.
-static BOOL HPIPForwardingEnabled(void) {
+BOOL HPIPForwardingEnabled(void) {
     int value = 0;
     size_t len = sizeof(value);
     if (sysctlbyname("net.inet.ip.forwarding", &value, &len, NULL, 0) != 0) return NO;

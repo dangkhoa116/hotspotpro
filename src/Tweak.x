@@ -116,6 +116,15 @@ static void HPStartCollector(void) {
             gCollectorTimer = [NSTimer scheduledTimerWithTimeInterval:10.0
                                                               repeats:YES
                                                                 block:^(NSTimer *t) {
+                // With the hotspot off there is nothing to measure, yet the full
+                // sample -- two kernel table walks, a lease-file parse and a
+                // state write -- was running six times a minute forever. Check
+                // the cheap signal every 10s so switching the hotspot on is
+                // still noticed quickly, but only sample once a minute while it
+                // is off.
+                static int idleTicks = 0;
+                if (!HPIPForwardingEnabled() && ++idleTicks < 6) return;
+                idleTicks = 0;
                 HPCollectorSample();
             }];
 

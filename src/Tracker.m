@@ -40,11 +40,29 @@ static void HPBeginNewPeriod(NSMutableDictionary *state, NSDate *now, NSInteger 
     // session's counters into the fresh period.
 }
 
+/// A content fingerprint of the state, ignoring the sample timestamp.
+///
+/// The timestamp changes on every tick by definition, so including it would
+/// make the answer "changed" every time and nothing would ever be skipped.
+/// Serialising rather than comparing dictionaries handles the nested
+/// device/history containers without needing a deep copy. If serialisation ever
+/// produced different bytes for equal content the result is a redundant write,
+/// never a skipped real change -- the safe direction to fail in.
+static NSData *HPStateFingerprint(NSDictionary *state) {
+    NSMutableDictionary *copy = [state mutableCopy];
+    [copy removeObjectForKey:HPStUpdatedKey];
+    return [NSPropertyListSerialization dataWithPropertyList:copy
+                                                      format:NSPropertyListBinaryFormat_v1_0
+                                                     options:0
+                                                       error:NULL];
+}
+
 NSDictionary *HPTick(void) {
     NSDictionary *cfg = HPConfig();
     if (![cfg[HPCfgEnabledKey] boolValue]) return nil;
 
     NSMutableDictionary *state = HPStateLoad();
+    NSData *fingerprintBefore = HPStateFingerprint(state);
     NSDate *now = [NSDate date];
     NSInteger resetDay = [cfg[HPCfgResetDayKey] integerValue];
     HPTickEvents events = HPTickEventNone;
@@ -230,7 +248,16 @@ NSDictionary *HPTick(void) {
         }
     }
 
-    HPStateSave(state);
+    // An idle phone was doing an atomic rewrite of this file every 10 seconds --
+    // around 8,600 a day -- with identical contents. Write when something
+    // actually changed, and otherwise no more than once a minute so the "last
+    // updated" stamp cannot drift arbitrarily far behind.
+    static NSDate *lastWrite;
+    BOOL changed = ![HPStateFingerprint(state) isEqualToData:fingerprintBefore];
+    if (changed || !lastWrite || [now timeIntervalSinceDate:lastWrite] >= 60.0) {
+        HPStateSave(state);
+        lastWrite = now;
+    }
 
     return @{
         HPTickAddedKey   : @(added),

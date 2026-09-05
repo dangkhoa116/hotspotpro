@@ -459,7 +459,7 @@ int main(int argc, char *argv[]) {
                         }
                         HPSaveInstalledBlocks();
                     }
-                    sleep(5);
+                    sleep(15);
                     continue;
                 }
 
@@ -487,7 +487,12 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (fd < 0) {
-                    sleep(5);   // hotspot is off; nothing to do
+                    // Hotspot off: nothing can happen that a slower poll would
+                    // miss, and waking every 5s forever is a battery cost paid
+                    // for no information. The trade is that up to this long of a
+                    // new session's traffic lands before the tap opens, so it
+                    // counts toward the total but is attributed to no device.
+                    sleep(15);
                     continue;
                 }
 

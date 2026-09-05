@@ -113,6 +113,11 @@ NSArray<NSDictionary *> *HPCopyInterfaceCandidates(NSArray<NSDictionary *> *ifac
 /// reported "Hotspot off" for the first moments after the switch was flipped.
 BOOL HPHotspotIsActive(NSArray<NSDictionary *> *ifaces);
 
+/// `net.inet.ip.forwarding` on its own: one sysctl, no table walk and no
+/// allocation. Use it to decide whether a full sample is worth taking at all;
+/// use HPHotspotIsActive() when you already have the interface list.
+BOOL HPIPForwardingEnabled(void);
+
 /// Sum of in+out over the named interfaces. Each forwarded packet is counted
 /// once: client->internet arrives as ibytes, internet->client leaves as obytes.
 uint64_t HPTotalBytes(NSArray<NSDictionary *> *ifaces, NSArray<NSString *> *names);
