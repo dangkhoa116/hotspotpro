@@ -24,7 +24,11 @@ WORK="$HOME/HotspotPro"
 mkdir -p "$WORK"
 cp -f "$SRC"/*.m "$SRC"/*.h "$SRC"/Makefile "$SRC"/control "$WORK"/ 2>/dev/null
 cp -f "$SRC"/*.x "$SRC"/*.plist "$WORK"/ 2>/dev/null
-cp -f "$SRC"/donate-url.txt "$WORK"/ 2>/dev/null
+if [ -s "$SRC/donate-url.txt" ]; then
+    printf '#define HP_DONATE_URL "%s"\n' "$(cat "$SRC/donate-url.txt")" > "$WORK/DonateURL.h"
+else
+    rm -f "$WORK/DonateURL.h"
+fi
 # layout/ carries the LaunchDaemon plist and the DEBIAN maintainer scripts.
 rm -rf "$WORK/layout"
 cp -r "$SRC"/layout "$WORK"/ 2>/dev/null

@@ -21,7 +21,16 @@ WORK="$HOME/HotspotPro-release"
 rm -rf "$WORK"
 mkdir -p "$WORK"
 cp -f "$SRC"/*.m "$SRC"/*.h "$SRC"/*.x "$SRC"/Makefile "$SRC"/control "$SRC"/*.plist "$WORK"/ 2>/dev/null
-cp -f "$SRC"/donate-url.txt "$WORK"/ 2>/dev/null   # optional; absent = no tip row
+
+# Turn the tip-jar link into a header. Generated rather than passed as a -D:
+# the URL contains '&', which make and the shell between them mangle.
+if [ -s "$SRC/donate-url.txt" ]; then
+    printf '#define HP_DONATE_URL "%s"\n' "$(cat "$SRC/donate-url.txt")" > "$WORK/DonateURL.h"
+    echo "tip jar: $(cat "$SRC/donate-url.txt")"
+else
+    rm -f "$WORK/DonateURL.h"
+    echo "tip jar: not configured, row will be hidden"
+fi
 cp -r "$SRC"/layout "$WORK"/
 chmod 755 "$WORK"/layout/DEBIAN/postinst "$WORK"/layout/DEBIAN/prerm
 
