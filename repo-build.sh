@@ -31,6 +31,14 @@ cp -f "$SRC"/icon.png "$DOCS"/CydiaIcon.png
 # edited in place, so the URLs live in one file and re-running this is safe.
 for template in "$SRC"/web/*; do
     name="$(basename "$template")"
+
+    # donate.html holds payment details that are edited by hand and must
+    # outlive a rebuild, so it is seeded once and never overwritten.
+    if [ "$name" = "donate.html" ] && [ -f "$DOCS/$name" ]; then
+        echo "keeping your edited $name"
+        continue
+    fi
+
     sed -e "s|@BASE_URL@|$BASE_URL|g" \
         -e "s|@GITHUB@|$GITHUB|g" \
         -e "s|@VERSION@|$VERSION|g" \

@@ -10,10 +10,10 @@ Architecture: iphoneos-arm
 Version: 0.5.2
 Installed-Size: 1012
 Filename: debs/com.dangkhoa.hotspotpro_0.5.2_iphoneos-arm.deb
-Size: 88600
-MD5sum: 8b7d2be50f1e71d01f9f3a9c62c6e674
-SHA1: b760ae531a2aba241c2a5dcebda5dcd1c9c1812b
-SHA256: 83cab29d4df2cf512f0776a2c79a6280bcbd127dfe486b9f884e29fa95d30735
+Size: 88438
+MD5sum: 58b1868c2c9d52d6db88eba39b13c427
+SHA1: d268b9cde2db3efb5ae3cf13c14bb24a2d7db44e
+SHA256: 2a5af5593b21344bbd0be5d0568b9538d0ab370327cb42d74130d6a29142b656
 Icon: https://dangkhoa116.github.io/HotspotPro/CydiaIcon.png
 Depiction: https://dangkhoa116.github.io/HotspotPro/depiction.html
 SileoDepiction: https://dangkhoa116.github.io/HotspotPro/depiction.json
@@ -29,12 +29,12 @@ Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0)
 Tag: purpose::extension, role::enduser
 Architecture: iphoneos-arm64
 Version: 0.5.2
-Installed-Size: 936
+Installed-Size: 1012
 Filename: debs/com.dangkhoa.hotspotpro_0.5.2_iphoneos-arm64.deb
-Size: 88840
-MD5sum: 0a3f624656c857489f5cde9e45263883
-SHA1: 6aa186fa347575d9f51949c5073ea6e1a2935e5b
-SHA256: 04b998e3f08b2b1816461619cb8f58be7b65d75e34a910525bf193208dac6e25
+Size: 88530
+MD5sum: 2351dd576a90503b957df93e865483cf
+SHA1: 2aeb8e73bdfbe6b542041c23c72d16adaa917859
+SHA256: c5347a38a83d64a9771835ac1f7caeb62d67af25f27343f9440f7a07bf064a1f
 Icon: https://dangkhoa116.github.io/HotspotPro/CydiaIcon.png
 Depiction: https://dangkhoa116.github.io/HotspotPro/depiction.html
 SileoDepiction: https://dangkhoa116.github.io/HotspotPro/depiction.json
