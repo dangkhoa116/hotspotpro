@@ -160,6 +160,21 @@ static NSArray *HPLiveConnectedDevices(void) {
 
     static const NSTimeInterval kSilentCutoff = 90.0;
     NSDate *now = [NSDate date];
+
+    // Only trust this filter while the daemon is demonstrably counting. Its tap
+    // closes whenever the bridge flaps — which it does, repeatedly, around the
+    // start of a session — and every timestamp then ages at once. Filtering on
+    // stale data hid devices that were connected the whole time, which is a
+    // worse failure than briefly listing one that has left.
+    NSDate *freshest = nil;
+    for (NSString *mac in lastSeen) {
+        NSDate *d = lastSeen[mac];
+        if ([d isKindOfClass:[NSDate class]] &&
+            (!freshest || [d compare:freshest] == NSOrderedDescending)) {
+            freshest = d;
+        }
+    }
+    if (!freshest || [now timeIntervalSinceDate:freshest] > kSilentCutoff) return arp;
     NSMutableArray *present = [NSMutableArray array];
     for (NSDictionary *dev in arp) {
         NSDate *seen = lastSeen[dev[HPDevMacKey]];

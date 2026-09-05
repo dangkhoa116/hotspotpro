@@ -1,6 +1,6 @@
 Package: com.dangkhoa.hotspotpro
 Name: HotspotPro
-Version: 0.6.2
+Version: 0.6.5
 Architecture: iphoneos-arm64
 Description: See how much data your Personal Hotspot has shared, who is using it, and cap them.
 Maintainer: DangKhoa <dangkhoa116@gmail.com>

@@ -15,6 +15,15 @@
 // SpringBoard's main thread is a Safe Mode boot loop, and no usage counter is
 // worth that.
 
+// No private API here on purpose. SpringBoard does hold the exact tethering
+// connection count -- the number behind the green status bar, in
+// _UIStatusBarDataTetheringEntry.connectionCount, with
+// SBStatusBarStateAggregator._updateTetheringState as its change event -- and
+// reading it would beat every heuristic in this file. It is deliberately not
+// used: private names move between firmwares, and this tweak already runs on
+// 15.4.1 through 17.0.2. Presence is derived from the ARP table and the
+// daemon's own tap instead.
+
 #import <UIKit/UIKit.h>
 #include <notify.h>
 #include <sys/socket.h>
