@@ -785,7 +785,26 @@ static NSArray *HPBuildBodySpecifiers(void) {
                               "routing to it until the period resets or you set the "
                               "limit back to No Limit. Other devices are unaffected.")];
 
-    NSArray *values = @[ @0, @0.1, @0.25, @0.5, @1, @2, @3, @5, @10, @20 ];
+    // Values are GB, but the sub-1 GB steps are exact binary fractions rather
+    // than decimal ones so their labels land on round numbers: 0.1 GB rendered
+    // as "102 MB" read like a bug, whereas 100/1024 GB is exactly 100 MB. All
+    // three divide by a power of two, so the multiplication below is exact.
+    NSMutableArray *values = [@[ @0, @(100 / 1024.0), @(250 / 1024.0), @(500 / 1024.0),
+                                 @1, @2, @3, @5, @10, @20 ] mutableCopy];
+
+    // A limit stored under the old values (0.1 GB and friends) must still be
+    // listed, or an already-limited device would open to a row with nothing
+    // selected and silently lose its limit on the next tap.
+    double current = [HPConfig()[HPCfgDeviceLimitsKey][[self hpMac]] doubleValue];
+    BOOL listed = NO;
+    for (NSNumber *v in values) {
+        if (fabs(v.doubleValue - current) < 1e-9) { listed = YES; break; }
+    }
+    if (!listed && current > 0) {
+        [values addObject:@(current)];
+        [values sortUsingSelector:@selector(compare:)];
+    }
+
     NSMutableArray *titles = [NSMutableArray array];
     for (NSNumber *v in values) {
         double gb = v.doubleValue;
