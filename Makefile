@@ -25,6 +25,13 @@ TWEAK_NAME = HotspotPro
 HotspotPro_FILES = Tweak.x Collector.m Prefs.m Tracker.m
 HotspotPro_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 HotspotPro_FRAMEWORKS = UIKit Foundation
+
+# Tip jar link, read from donate-url.txt so it is never hardcoded. With the file
+# absent the row is compiled out of the pane entirely.
+HP_DONATE_URL := $(strip $(shell cat donate-url.txt 2>/dev/null))
+ifneq ($(HP_DONATE_URL),)
+HotspotPro_CFLAGS += -DHP_DONATE_URL=\"$(HP_DONATE_URL)\"
+endif
 # PSSpecifier/PSListController live here; the SDK ships the stub.
 HotspotPro_PRIVATE_FRAMEWORKS = Preferences
 

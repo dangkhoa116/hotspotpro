@@ -4,3 +4,8 @@ release/
 repo/
 *.log
 hotspotpro-bin
+
+# Local config: your links. Set these, then rebuild.
+donate-url.txt
+repo-url.txt
+github-url.txt

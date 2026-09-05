@@ -10,14 +10,14 @@ Architecture: iphoneos-arm
 Version: 0.5.2
 Installed-Size: 1012
 Filename: debs/com.dangkhoa.hotspotpro_0.5.2_iphoneos-arm.deb
-Size: 88580
-MD5sum: ddea1c5f4c69420156e4925b00578323
-SHA1: 15d6036f976c057cf2a4beb426413682fa816b4f
-SHA256: 1d706f274e946842ab48f5c482804b00e59b6f72dcc6875cb83dda556b41ab2a
-Icon: https://CHANGEME.github.io/HotspotPro/CydiaIcon.png
-Depiction: https://CHANGEME.github.io/HotspotPro/depiction.html
-SileoDepiction: https://CHANGEME.github.io/HotspotPro/depiction.json
-Homepage: https://CHANGEME.github.io/HotspotPro
+Size: 88650
+MD5sum: 9c93892fa60b69d54889d3304a468743
+SHA1: fd26b1b22dbac5bb50805d3dcc22dc6f17b6b464
+SHA256: e39dedfcade4752e1ceb8a3f0337a4b75eb1298cb1682cc1480b01d2ea07e0ca
+Icon: https://dangkhoa116.github.io/HotspotPro/CydiaIcon.png
+Depiction: https://dangkhoa116.github.io/HotspotPro/depiction.html
+SileoDepiction: https://dangkhoa116.github.io/HotspotPro/depiction.json
+Homepage: https://dangkhoa116.github.io/HotspotPro
 
 Package: com.dangkhoa.hotspotpro
 Name: HotspotPro
@@ -31,12 +31,12 @@ Architecture: iphoneos-arm64
 Version: 0.5.2
 Installed-Size: 1012
 Filename: debs/com.dangkhoa.hotspotpro_0.5.2_iphoneos-arm64.deb
-Size: 88594
-MD5sum: f34ea5d7ecd00f119f6f4f3eee9e84cd
-SHA1: 2071fb3e2ceedea7bf33865847cb421e6b1b34d8
-SHA256: 95d2eea3e1c06cf2c8a275f62aca57d02295e9b49a91d92e947a6e6376fb465b
-Icon: https://CHANGEME.github.io/HotspotPro/CydiaIcon.png
-Depiction: https://CHANGEME.github.io/HotspotPro/depiction.html
-SileoDepiction: https://CHANGEME.github.io/HotspotPro/depiction.json
-Homepage: https://CHANGEME.github.io/HotspotPro
+Size: 88680
+MD5sum: b8eb96621283a4e8ccd2a1d3d3484c41
+SHA1: b474d72db142f268a386472163c7ae7b384835d1
+SHA256: d9c00819e22b462e466469b4ac45de41d67a12d2e9c05ae51c017fcfd77fb23b
+Icon: https://dangkhoa116.github.io/HotspotPro/CydiaIcon.png
+Depiction: https://dangkhoa116.github.io/HotspotPro/depiction.html
+SileoDepiction: https://dangkhoa116.github.io/HotspotPro/depiction.json
+Homepage: https://dangkhoa116.github.io/HotspotPro
 

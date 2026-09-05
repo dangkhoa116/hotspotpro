@@ -142,10 +142,14 @@ static void HPStartCollector(void) {
 /// hotspot clients at a handful, but the historical list is unbounded.
 static const NSUInteger kHPMaxOfflineRows = 6;
 
-/// Tip jar. Set this to a Ko-fi / Buy Me a Coffee / PayPal.me link before
-/// release; while it is empty the row is not shown at all, so an unconfigured
-/// build never presents a button that goes nowhere.
-static NSString *const kHPDonateURL = @"";
+/// Tip jar. The link comes from `donate-url.txt` at build time (the Makefile
+/// passes it in), so changing it never means editing code. While it is empty
+/// the row is not shown at all — an unconfigured build never presents a button
+/// that goes nowhere.
+#ifndef HP_DONATE_URL
+#define HP_DONATE_URL ""
+#endif
+static NSString *const kHPDonateURL = @HP_DONATE_URL;
 
 static NSArray *HPBuildDeviceRows(void);
 static void HPReloadValues(PSListController *pane);

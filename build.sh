@@ -24,6 +24,7 @@ WORK="$HOME/HotspotPro"
 mkdir -p "$WORK"
 cp -f "$SRC"/*.m "$SRC"/*.h "$SRC"/Makefile "$SRC"/control "$WORK"/ 2>/dev/null
 cp -f "$SRC"/*.x "$SRC"/*.plist "$WORK"/ 2>/dev/null
+cp -f "$SRC"/donate-url.txt "$WORK"/ 2>/dev/null
 # layout/ carries the LaunchDaemon plist and the DEBIAN maintainer scripts.
 rm -rf "$WORK/layout"
 cp -r "$SRC"/layout "$WORK"/ 2>/dev/null
