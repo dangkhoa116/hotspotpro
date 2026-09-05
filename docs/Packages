@@ -9,7 +9,7 @@ Tag: purpose::extension, role::enduser
 Architecture: iphoneos-arm
 Version: 0.5.2
 Installed-Size: 1012
-Filename: debs/com.dangkhoa.hotspotpro_0.5.2_iphoneos-arm.deb
+Filename: https://github.com/dangkhoa116/hotspotpro/releases/download/v0.5.2/com.dangkhoa.hotspotpro_0.5.2_iphoneos-arm.deb
 Size: 88648
 MD5sum: 9d04e0ba8258d7fdeb94f95f983538fb
 SHA1: 93b6c3f4d01349e6ce1930e80fddcb79d2ae7130
@@ -30,7 +30,7 @@ Tag: purpose::extension, role::enduser
 Architecture: iphoneos-arm64
 Version: 0.5.2
 Installed-Size: 1012
-Filename: debs/com.dangkhoa.hotspotpro_0.5.2_iphoneos-arm64.deb
+Filename: https://github.com/dangkhoa116/hotspotpro/releases/download/v0.5.2/com.dangkhoa.hotspotpro_0.5.2_iphoneos-arm64.deb
 Size: 88780
 MD5sum: 685de47ad56b2857d5f752c9042c53e2
 SHA1: 6d055832ee7eb29bf13452e408f8251eb6d7e738
