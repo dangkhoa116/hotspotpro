@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Erase a path from every commit in this repo's history, not just from the tip.
 # Takes a git pathspec, so a glob works and matches at any depth:
 #
-#   wsl -d Ubuntu -u builder -- bash .../purge-file.sh REDDIT-POST.md
-#   wsl -d Ubuntu -u builder -- bash .../purge-file.sh '*.md'
+#   wsl -d Ubuntu -u builder -- bash .../tools/purge-file.sh REDDIT-POST.md
+#   wsl -d Ubuntu -u builder -- bash .../tools/purge-file.sh '*.md'
 #
 # Quote the glob so the calling shell hands it to git unexpanded.
 #

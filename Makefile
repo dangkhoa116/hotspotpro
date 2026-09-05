@@ -1,3 +1,18 @@
+# Project layout
+#
+#   src/      the tweak, the CLI, the daemon, and the collector they share
+#   tools/    build, verification, repo and git scripts
+#   assets/   package icons
+#   layout/   files installed onto the device (DEBIAN scripts, LaunchDaemon)
+#   web/      templates for the repo's landing page and depictions
+#   docs/     the generated APT repo, served by GitHub Pages
+#   release/  built debs (not in git)
+#
+# The sources are named bare below even though they live in src/: the build
+# scripts copy them FLAT into a Linux-native build directory, because Theos on
+# a WSL1 /mnt/c path hits permission and symlink problems. Adding src/ prefixes
+# here would break that. See tools/build.sh.
+
 TARGET := iphone:clang:latest:14.0
 
 # arm64e is not optional for a release: A12 and newer devices run arm64e system

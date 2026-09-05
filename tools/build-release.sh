@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the release set: one .deb per jailbreak type, each fat with both
 # architectures. Run as builder.
-#   wsl -d Ubuntu -u builder -- bash /mnt/c/Users/DangKhoa/HotspotPro/build-release.sh
+#   wsl -d Ubuntu -u builder -- bash /mnt/c/Users/DangKhoa/HotspotPro/tools/build-release.sh
 #
 # Why two packages:
 #   rootless (Architecture: iphoneos-arm64) — Dopamine, palera1n rootless, Xina
@@ -20,7 +20,10 @@ echo "=== release build started $(date) ==="
 WORK="$HOME/HotspotPro-release"
 rm -rf "$WORK"
 mkdir -p "$WORK"
-cp -f "$SRC"/*.m "$SRC"/*.h "$SRC"/*.x "$SRC"/Makefile "$SRC"/control "$SRC"/*.plist "$WORK"/ 2>/dev/null
+# Sources live in src/ but land FLAT in the build dir, so the Makefile keeps
+# naming them bare. Do not "fix" that by adding src/ prefixes in the Makefile.
+cp -f "$SRC"/src/*.m "$SRC"/src/*.h "$SRC"/src/*.x "$WORK"/ 2>/dev/null
+cp -f "$SRC"/Makefile "$SRC"/control "$SRC"/*.plist "$WORK"/ 2>/dev/null
 
 # Turn the tip-jar link into a header. Generated rather than passed as a -D:
 # the URL contains '&', which make and the shell between them mangle.

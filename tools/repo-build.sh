@@ -8,10 +8,11 @@
 # regenerated from release/*.deb, so the flow is: build-release.sh, then this.
 set -e
 
-BASE_URL="${1:-$(cat "$(dirname "$0")/repo-url.txt" 2>/dev/null || echo "https://CHANGEME.github.io/HotspotPro")}"
-BASE_URL="${BASE_URL%/}"
+# This script lives in tools/, so the project root is one level up.
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
 
-SRC="$(cd "$(dirname "$0")" && pwd)"
+BASE_URL="${1:-$(cat "$SRC/repo-url.txt" 2>/dev/null || echo "https://CHANGEME.github.io/HotspotPro")}"
+BASE_URL="${BASE_URL%/}"
 DOCS="$SRC/docs"
 DEBS="$DOCS/debs"
 
@@ -38,7 +39,7 @@ RELEASE_TAG="${HP_RELEASE_TAG:-}"
 mkdir -p "$DEBS"
 rm -f "$DEBS"/*.deb
 cp -f "$SRC"/release/*.deb "$DEBS"/
-cp -f "$SRC"/icon.png "$DOCS"/CydiaIcon.png
+cp -f "$SRC"/assets/icon.png "$DOCS"/CydiaIcon.png
 
 # The landing page and both depictions are rendered from web/ rather than
 # edited in place, so the URLs live in one file and re-running this is safe.

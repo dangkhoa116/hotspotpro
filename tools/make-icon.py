@@ -82,7 +82,17 @@ dot = int(S * 0.042)
 draw.ellipse([cx - dot, origin_y - dot, cx + dot, origin_y + dot], fill=FG)
 
 img = img.resize((SIZE, SIZE), Image.LANCZOS)
-img.save("icon.png")
-img.resize((60, 60), Image.LANCZOS).save("icon@60.png")
 
-print("wrote icon.png (120x120) and icon@60.png (60x60)")
+# Written next to the script's project root rather than to the current
+# directory, so running this from anywhere still updates the real icons that
+# repo-build.sh copies into the repo.
+import os
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
+os.makedirs(ASSETS, exist_ok=True)
+
+big = os.path.join(ASSETS, "icon.png")
+small = os.path.join(ASSETS, "icon@60.png")
+img.save(big)
+img.resize((60, 60), Image.LANCZOS).save(small)
+
+print("wrote %s (120x120) and %s (60x60)" % (big, small))

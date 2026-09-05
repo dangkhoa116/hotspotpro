@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the HotspotPro .deb. Run as builder.
-#   wsl -d Ubuntu -u builder -- bash /mnt/c/Users/DangKhoa/HotspotPro/build.sh
+#   wsl -d Ubuntu -u builder -- bash /mnt/c/Users/DangKhoa/HotspotPro/tools/build.sh
 
 export THEOS="$HOME/theos"
 export PATH="$THEOS/toolchain/linux/host/bin:$PATH"
@@ -22,8 +22,11 @@ echo '=== building ==='
 SRC=/mnt/c/Users/DangKhoa/HotspotPro
 WORK="$HOME/HotspotPro"
 mkdir -p "$WORK"
-cp -f "$SRC"/*.m "$SRC"/*.h "$SRC"/Makefile "$SRC"/control "$WORK"/ 2>/dev/null
-cp -f "$SRC"/*.x "$SRC"/*.plist "$WORK"/ 2>/dev/null
+# Sources live in src/ but are copied FLAT into the build dir, which is why the
+# Makefile still names them bare (Tweak.x, Collector.m, ...). Keep it that way:
+# the flattening is what lets the tree be organised without touching Theos.
+cp -f "$SRC"/src/*.m "$SRC"/src/*.h "$SRC"/src/*.x "$WORK"/ 2>/dev/null
+cp -f "$SRC"/Makefile "$SRC"/control "$SRC"/*.plist "$WORK"/ 2>/dev/null
 if [ -s "$SRC/donate-url.txt" ]; then
     printf '#define HP_DONATE_URL "%s"\n' "$(cat "$SRC/donate-url.txt")" > "$WORK/DonateURL.h"
 else

@@ -7,7 +7,8 @@
 # amount of "does the URL return 200" checking would have caught.
 #
 #   ./check-repo.sh [base-url]
-BASE="${1:-$(cat "$(dirname "$0")/repo-url.txt" 2>/dev/null)}"
+# tools/ sits one level below the project root, where repo-url.txt lives.
+BASE="${1:-$(cat "$(dirname "$0")/../repo-url.txt" 2>/dev/null)}"
 BASE="${BASE%/}"
 TMP=$(mktemp -d)
 FAIL=0
