@@ -1324,10 +1324,29 @@ static void HPReloadValues(PSListController *pane) {
 
 #pragma mark - Entry
 
+// iOS 18 is untested and reported broken: a user on 18.3.1 (iPhone 11, 2026-09-05)
+// got sporadic resprings and a Settings app that refused to open. Working
+// reports exist for 16.5, 16.7 and 17.0.2.
+//
+// The package deliberately still INSTALLS on 18 -- the firmware dependency stays
+// >= 14.0 -- but the hooks stay out of SpringBoard and Settings there. A dormant
+// tweak is a bug report; a tweak that takes down the Settings app is a phone the
+// user cannot fix from the UI. Lift this once 18 has actually been tested.
+static BOOL HPFirmwareUntested(void) {
+    NSOperatingSystemVersion ios18 = { 18, 0, 0 };
+    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:ios18];
+}
+
 %ctor {
     @autoreleasepool {
         @try {
             NSString *bundle = [[NSBundle mainBundle] bundleIdentifier];
+
+            if (HPFirmwareUntested()) {
+                HPLog(@"iOS 18+ detected in %@ — hooks disabled, this firmware "
+                      @"is untested and reported unstable", bundle);
+                return;
+            }
 
             if ([bundle isEqualToString:@"com.apple.springboard"]) {
                 HPStartCollector();

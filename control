@@ -1,10 +1,10 @@
 Package: com.dangkhoa.hotspotpro
 Name: HotspotPro
-Version: 0.5.2
+Version: 0.5.3
 Architecture: iphoneos-arm64
 Description: See how much data your Personal Hotspot has shared, who is using it, and cap them.
 Maintainer: DangKhoa <dangkhoa116@gmail.com>
 Author: DangKhoa <dangkhoa116@gmail.com>
 Section: Networking
-Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0)
+Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0), firmware (<< 18.0)
 Tag: purpose::extension, role::enduser
