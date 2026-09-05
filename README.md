@@ -97,6 +97,39 @@ scripts copy them flat into a Linux-native directory, because Theos on a WSL1
 `/mnt/c` path hits permission and symlink problems. Adding `src/` prefixes to
 the Makefile would break the build.
 
+## Changelog
+
+**0.6.0**
+- Split into two dylibs: `HotspotPro.dylib` (SpringBoard) and
+  `HotspotProSettings.dylib` (Preferences). Previously one dylib served both,
+  so SpringBoard loaded `Preferences.framework` at launch — a private UI
+  framework it never otherwise loads, before any of the tweak's own guards
+  could run. A fault in the UI code could therefore stop the phone booting;
+  now its worst case is a Settings pane that misbehaves. `tools/check-links.sh`
+  enforces it.
+- Event-driven instead of polling. Both the daemon and the collector watch a
+  `PF_ROUTE` socket, which the kernel writes to when an interface or address
+  changes — so a hotspot session is noticed the moment it starts, and an idle
+  phone is not woken to be told nothing happened.
+
+**0.5.5**
+- Per-device limit options are round numbers (100 MB, 250 MB, 500 MB). They
+  were decimal fractions of a GB, so they displayed as 102 MB and 256 MB.
+
+**0.5.4**
+- Far less background work with the hotspot off: the state file is written only
+  when its contents changed (it was rewritten every 10 seconds regardless),
+  sampling backs off to once a minute, and the daemon's idle poll went from 5s
+  to 15s.
+
+**0.5.3**
+- Refuses to install on iOS 18, where it is known to break the Settings app,
+  with a runtime gate behind the dependency for anyone who force-installs.
+
+**0.5.2**
+- Per-device data limits, device pages, and usage in the stock Personal Hotspot
+  pane.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

@@ -261,6 +261,18 @@ static void HPApplyBlocklist(void) {
     }
 }
 
+/// Empty the routing socket's queue.
+///
+/// The message contents do not matter: any of them means the network
+/// configuration moved, which is the cue to re-check the interfaces. What does
+/// matter is draining them — a socket left full stops delivering, and with it
+/// the wake-ups this daemon now depends on. Our own block/unblock writes come
+/// back here too, which is harmless.
+static void HPDrainRouteSocket(int rs) {
+    char scratch[2048];
+    while (recv(rs, scratch, sizeof(scratch), MSG_DONTWAIT) > 0) { }
+}
+
 /// Routes outlive the process, so anything left behind by a crash or an upgrade
 /// is torn down before we start — otherwise a device could stay cut off with
 /// nothing left that knows why.
@@ -432,6 +444,18 @@ int main(int argc, char *argv[]) {
         char *buf = malloc(kBufferSize);
         if (!buf) return 1;
 
+        // The kernel broadcasts a message on this socket whenever an interface,
+        // address or route changes. Selecting on it turns "has the hotspot come
+        // up yet?" from a question asked on a timer into one the kernel answers
+        // when the answer changes -- no wake-ups in between. Reading a routing
+        // socket needs no privilege; only writing to one does, which this
+        // process already does for the per-device blocks.
+        int rs = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC);
+        if (rs < 0) {
+            HPDaemonLog(@"route socket: %s — falling back to polling",
+                        strerror(errno));
+        }
+
         int fd = -1;
         NSString *bridgeName = nil;
         NSString *bridgeMac = nil;
@@ -487,22 +511,49 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (fd < 0) {
-                    // Hotspot off: nothing can happen that a slower poll would
-                    // miss, and waking every 5s forever is a battery cost paid
-                    // for no information. The trade is that up to this long of a
-                    // new session's traffic lands before the tap opens, so it
-                    // counts toward the total but is attributed to no device.
-                    sleep(15);
+                    // Hotspot off. Rather than waking on a timer to ask whether
+                    // anything changed, block until the kernel says so: the
+                    // routing socket becomes readable the moment an interface
+                    // or address appears, which is exactly what starting a
+                    // hotspot does. Waiting here costs nothing. The timeout is
+                    // a backstop for a missed message, not the mechanism.
+                    if (rs >= 0) {
+                        fd_set rfds;
+                        FD_ZERO(&rfds);
+                        FD_SET(rs, &rfds);
+                        struct timeval tv = { .tv_sec = 60, .tv_usec = 0 };
+                        if (select(rs + 1, &rfds, NULL, NULL, &tv) > 0) {
+                            HPDrainRouteSocket(rs);
+                        }
+                    } else {
+                        sleep(15);   // no routing socket; fall back to polling
+                    }
                     continue;
                 }
 
                 fd_set readfds;
                 FD_ZERO(&readfds);
                 FD_SET(fd, &readfds);
-                struct timeval timeout = { .tv_sec = 1, .tv_usec = 0 };
+                int maxfd = fd;
+                if (rs >= 0) {
+                    FD_SET(rs, &readfds);
+                    if (rs > maxfd) maxfd = rs;
+                }
+                // 5s rather than 1s: with immediate mode off this only governs
+                // how often a partly-filled buffer is drained, and waking five
+                // times less often while tethering costs nothing but latency.
+                struct timeval timeout = { .tv_sec = 5, .tv_usec = 0 };
 
-                int ready = select(fd + 1, &readfds, NULL, NULL, &timeout);
-                if (ready > 0) {
+                int ready = select(maxfd + 1, &readfds, NULL, NULL, &timeout);
+
+                // The hotspot going down arrives here as a routing message, so
+                // the next loop notices the bridge is gone immediately instead
+                // of up to five seconds later.
+                if (ready > 0 && rs >= 0 && FD_ISSET(rs, &readfds)) {
+                    HPDrainRouteSocket(rs);
+                }
+
+                if (ready > 0 && FD_ISSET(fd, &readfds)) {
                     ssize_t n = read(fd, buf, kBufferSize);
                     if (n > 0) {
                         HPConsume(buf, n, bridgeMac);

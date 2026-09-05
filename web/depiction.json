@@ -78,7 +78,27 @@
       "views": [
         {
           "class": "DepictionMarkdownView",
-          "markdown": "**@VERSION@**\n• Per-device data limits that cut a device off when it goes over\n• Device pages showing usage, address and status\n• Usage, connected devices and limits in the stock Personal Hotspot pane"
+          "markdown": "**0.6.0**\n• Split into two extensions so SpringBoard no longer loads the Settings UI or its private framework — a bug in the interface can no longer stop the phone booting\n• Wakes when the system reports a network change instead of polling on a timer, so an idle phone is left alone and a new hotspot session is picked up at once"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.5.5**\n• Per-device limits now offer round figures (100 MB, 250 MB, 500 MB) instead of 102 MB and 256 MB"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.5.4**\n• Much less background work with the hotspot off: the usage file is written only when something actually changed, sampling backs off, and the helper idles instead of waking every few seconds"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.5.3**\n• Will not install on iOS 18, where it is known to break the Settings app. Reports welcome from anyone who wants it supported there"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.5.2**\n• Per-device data limits that cut a device off when it goes over\n• Device pages showing usage, address and status\n• Usage, connected devices and limits in the stock Personal Hotspot pane"
         }
       ]
     }

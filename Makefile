@@ -31,23 +31,36 @@ endif
 
 include $(THEOS)/makefiles/common.mk
 
-# One package, two products: the tweak that injects into SpringBoard and
-# Preferences, and the CLI probe that shares its collector sources. Keeping the
-# CLI in the package means the same code that counts the bytes can always be
-# run by hand to see what it sees.
-TWEAK_NAME = HotspotPro
+# TWO tweak dylibs, not one, and the split is deliberate.
+#
+# A single dylib filtered to both bundles made dyld load Preferences.framework
+# into SpringBoard — a private UI framework SpringBoard never otherwise loads —
+# during its own launch, before any of the tweak's own guards could run. That
+# put the UI code's worst case at "the phone will not boot" instead of "a
+# Settings pane misbehaves". Each half now loads only where it runs.
+#
+# tools/check-links.sh verifies it: HotspotPro.dylib must not name
+# Preferences.framework.
+TWEAK_NAME = HotspotPro HotspotProSettings
 
-HotspotPro_FILES = Tweak.x Collector.m Prefs.m Tracker.m
+# SpringBoard: the collector. Filter in HotspotPro.plist.
+HotspotPro_FILES = SpringBoard.x Collector.m Prefs.m Tracker.m
 HotspotPro_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 HotspotPro_FRAMEWORKS = UIKit Foundation
 
+# Preferences: the UI. Filter in HotspotProSettings.plist. This is the only
+# product that may link Preferences.framework, where PSSpecifier and
+# PSListController live (the SDK ships the stub).
+#
 # The tip-jar link is NOT passed as a -D define. A donate URL contains '&',
 # which unquoted reaches the shell as a background operator and truncates the
 # compile command; quoting it instead confuses Theos's own makefile parsing
 # (it ended up reading Prefix.pch as a makefile). The build scripts generate
-# DonateURL.h instead, which Tweak.x picks up with __has_include.
-# PSSpecifier/PSListController live here; the SDK ships the stub.
-HotspotPro_PRIVATE_FRAMEWORKS = Preferences
+# DonateURL.h instead, which Settings.x picks up with __has_include.
+HotspotProSettings_FILES = Settings.x Collector.m Prefs.m Tracker.m
+HotspotProSettings_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+HotspotProSettings_FRAMEWORKS = UIKit Foundation
+HotspotProSettings_PRIVATE_FRAMEWORKS = Preferences
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
