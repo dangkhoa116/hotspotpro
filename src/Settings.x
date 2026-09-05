@@ -132,6 +132,21 @@ static HPSettingsHelper *gHelper;
     return [fmt stringFromDate:next];
 }
 
+/// Who is connected, read live rather than from the state file.
+///
+/// The state file is written by the collector, which samples lazily while the
+/// hotspot is off, so a list read from it could sit up to a minute behind —
+/// devices stayed on screen long after the hotspot was switched off. Two sysctl
+/// walks while a pane is actually on screen cost almost nothing, and this is the
+/// same reasoning that already applies to the status row below.
+///
+/// Byte totals still come from the state file: those are the collector's to
+/// compute, and only presence needs to be current.
+static NSArray *HPLiveConnectedDevices(void) {
+    NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
+    return HPCopyConnectedDevices(HPHotspotInterfaceNames(ifaces)) ?: @[];
+}
+
 /// "Is the hotspot on", smoothed.
 ///
 /// Even with IP forwarding as the primary signal, a status row that samples
@@ -140,13 +155,30 @@ static HPSettingsHelper *gHelper;
 /// row — at the cost of the row lagging a few seconds behind switching off.
 static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     static NSDate *lastActive;
-    static const NSTimeInterval kStickyFor = 15.0;
+    static int offRuns = 0;
+    static const int kOffRunsNeeded = 2;      // ignore a single blip, not fifteen seconds of them
+    static const NSTimeInterval kMaxHold = 8.0;
 
     if (HPHotspotIsActive(ifaces)) {
         lastActive = [NSDate date];
+        offRuns = 0;
         return YES;
     }
-    return lastActive && [[NSDate date] timeIntervalSinceDate:lastActive] < kStickyFor;
+
+    // Never seen active, or last seen active a while ago: answer immediately.
+    // Without this the row would claim "on" for its first couple of refreshes
+    // every time the pane is opened with the hotspot already off.
+    if (!lastActive) return NO;
+    if ([[NSDate date] timeIntervalSinceDate:lastActive] >= kMaxHold) return NO;
+
+    // Suppressing a transient needs one contradicting sample, not a fixed
+    // wall-clock hold. At the pane's 3s refresh this reports "off" a few
+    // seconds after the switch is flipped rather than fifteen.
+    if (offRuns < kOffRunsNeeded) {
+        offRuns++;
+        return YES;
+    }
+    return NO;
 }
 
 /// Read live rather than from the state file. The collector samples every 10s,
@@ -294,7 +326,10 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     // Toggling tracking adds or removes every row below the switch.
     [sig appendFormat:@"%d|", [HPConfig()[HPCfgEnabledKey] boolValue]];
 
-    for (NSDictionary *d in (state[HPStDevicesNowKey] ?: @[])) {
+    // Live, matching what the rows are built from. Read from the state file
+    // instead, this signature would not change when a device left, so the rows
+    // would never be rebuilt and the departed device would stay on screen.
+    for (NSDictionary *d in HPLiveConnectedDevices()) {
         [sig appendFormat:@"%@,", d[HPDevMacKey]];
     }
     [sig appendString:@"|"];
@@ -475,7 +510,8 @@ static NSArray *HPBuildSpecifiers(void) {
 static NSArray *HPBuildBodySpecifiers(void) {
     HPSettingsHelper *helper = [HPSettingsHelper shared];
     NSMutableArray *specs = [NSMutableArray array];
-    NSDictionary *state = HPStateLoad();
+    // No state read here any more: every value row fetches its own through a
+    // getter, and the device list is now read live.
 
     // --- usage ------------------------------------------------------------
     [specs addObject:HPGroup(@"THIS PERIOD", nil)];
@@ -485,7 +521,7 @@ static NSArray *HPBuildBodySpecifiers(void) {
     [specs addObject:HPValueRow(@"Hotspot", @selector(statusValue:))];
 
     // --- devices ----------------------------------------------------------
-    NSArray *devices = state[HPStDevicesNowKey] ?: @[];
+    NSArray *devices = HPLiveConnectedDevices();
     PSSpecifier *devicesGroup =
         HPGroup(@"CONNECTED DEVICES",
                 devices.count ? nil : @"No devices are connected right now.");
@@ -717,7 +753,7 @@ static NSArray *HPBuildDeviceRows(void) {
     HPSettingsHelper *helper = [HPSettingsHelper shared];
     NSDictionary *state = HPStateLoad();
     NSMutableArray *specs = [NSMutableArray array];
-    NSArray *devices = state[HPStDevicesNowKey] ?: @[];
+    NSArray *devices = HPLiveConnectedDevices();
 
     for (NSDictionary *dev in devices) {
         // Built with a getter like every other value row, rather than a static
