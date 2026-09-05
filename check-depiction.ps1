@@ -17,7 +17,7 @@ try {
 }
 
 if ($d.class) { "root class: $($d.class)" }
-else { "ROOT HAS NO class — Sileo will render nothing"; $fail = 1 }
+else { "ROOT HAS NO class - Sileo will render nothing"; $fail = 1 }
 
 if (-not $d.minVersion) { "no minVersion"; $fail = 1 }
 

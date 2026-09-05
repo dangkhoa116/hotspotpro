@@ -57,9 +57,12 @@ for deb in debs/*.deb; do
         echo "MD5sum: $(md5sum "$deb" | cut -d' ' -f1)"
         echo "SHA1: $(sha1sum "$deb" | cut -d' ' -f1)"
         echo "SHA256: $(sha256sum "$deb" | cut -d' ' -f1)"
-        echo "Icon: $BASE_URL/CydiaIcon.png"
-        echo "Depiction: $BASE_URL/depiction.html"
-        echo "SileoDepiction: $BASE_URL/depiction.json"
+        # ?v= is cache-busting, not decoration. Sileo and GitHub Pages both
+        # cache depictions, so a fixed URL means users keep seeing the previous
+        # release's depiction — including a broken one — long after it is fixed.
+        echo "Icon: $BASE_URL/CydiaIcon.png?v=$VERSION"
+        echo "Depiction: $BASE_URL/depiction.html?v=$VERSION"
+        echo "SileoDepiction: $BASE_URL/depiction.json?v=$VERSION"
         echo "Homepage: $BASE_URL"
         echo
     } >> Packages

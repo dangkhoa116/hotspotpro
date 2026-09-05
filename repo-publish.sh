@@ -40,9 +40,13 @@ for deb in *.deb; do
         echo "SHA256: $(sha256sum "$deb" | cut -d' ' -f1)"
         case "$deb" in
             *hotspotpro*)
-                echo "Icon: $PUBLIC/CydiaIcon.png"
-                echo "Depiction: $PUBLIC/depiction.html"
-                echo "SileoDepiction: $PUBLIC/depiction.json"
+                # Stamped with a timestamp rather than the version: during
+                # development the version often does not change between builds,
+                # and a cached depiction is exactly what wastes an afternoon.
+                stamp=$(date +%s)
+                echo "Icon: $PUBLIC/CydiaIcon.png?v=$stamp"
+                echo "Depiction: $PUBLIC/depiction.html?v=$stamp"
+                echo "SileoDepiction: $PUBLIC/depiction.json?v=$stamp"
                 ;;
         esac
         echo
