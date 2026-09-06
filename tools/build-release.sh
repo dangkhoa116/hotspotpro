@@ -104,7 +104,11 @@ ls -la "$OUT"
 # unshippable, so the encoding is checked here rather than trusted.
 echo
 echo "=== fat / ABI check ==="
-if ! "$SRC/tools/check-fat.sh" "$OUT"; then
+# `bash script`, never `./script`: nothing in this repo carries the exec bit,
+# because the work tree lives on /mnt/c and WSL1's DrvFs has no permission
+# metadata to store it in. Calling it directly is a permission denied on any
+# machine that respects the mode -- which is how this first failed in CI.
+if ! bash "$SRC/tools/check-fat.sh" "$OUT"; then
     echo "!! the debs above are NOT releasable"
     exit 1
 fi
