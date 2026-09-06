@@ -97,6 +97,26 @@ jobs:
             echo "no DONATE_URL secret set - the tip-jar row will be hidden"
           fi
 
+      # TEMPORARY. Xcode's linker gives us cpusubtype 0x80000002, but the
+      # chained fixups still come out format 1 (legacy ARM64E) rather than 12
+      # (ARM64E_USERLAND24). The suspect is the deployment target, which the
+      # linker uses to choose the format. Measure it instead of guessing.
+      - name: Probe the arm64e fixup format by deployment target
+        run: |
+          printf 'int f(void){return 0;}\n' > /tmp/probe.c
+          for v in 14.0 15.0 16.0; do
+            if xcrun clang -arch arm64e -dynamiclib \
+                 -isysroot "$THEOS/sdks/$IOS_SDK" \
+                 -miphoneos-version-min="$v" \
+                 -o "/tmp/probe-$v.dylib" /tmp/probe.c 2>/tmp/probe-$v.err; then
+              line=$(python3 tools/macho-abi.py --report "/tmp/probe-$v.dylib" \
+                     | grep arm64e | sed 's/  */ /g')
+            else
+              line="did not link: $(tail -1 /tmp/probe-$v.err)"
+            fi
+            echo "::error::minos $v ->$line"
+          done
+
       - name: Build both packages
         run: bash tools/build-release.sh
 
