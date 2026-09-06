@@ -9,10 +9,18 @@
 # and why both architectures in each: arm64 covers A7-A11, arm64e covers A12 and
 # newer, whose system processes a purely arm64 dylib cannot be injected into.
 
-export THEOS="$HOME/theos"
-export PATH="$THEOS/toolchain/linux/host/bin:$PATH"
+export THEOS="${THEOS:-$HOME/theos}"
 
-SRC=/mnt/c/Users/DangKhoa/HotspotPro
+# The Linux toolchain's own clang. Absent on a macOS CI runner, where Xcode
+# supplies the compiler and, more to the point, a linker that can emit a
+# loadable arm64e slice -- which is why this script has to run there at all.
+if [ -d "$THEOS/toolchain/linux/host/bin" ]; then
+    export PATH="$THEOS/toolchain/linux/host/bin:$PATH"
+fi
+
+# Derived, not hardcoded: the same script builds on the WSL box and on the
+# macOS runner.
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$SRC/build-release.log"
 exec > >(tee "$LOG") 2>&1
 echo "=== release build started $(date) ==="
@@ -52,11 +60,15 @@ build_scheme() {
     # deb is for, and Theos takes it verbatim from control rather than from the
     # scheme. Left alone, the rootful build produces a second iphoneos-arm64
     # package that overwrites the rootless one.
+    # sed -i.bak, not sed -i: BSD sed on macOS reads the next argument as the
+    # backup suffix, so the GNU spelling fails on the CI runner.
     if [ "$scheme" = "rootful" ]; then
-        sed -i 's/^Architecture: .*/Architecture: iphoneos-arm/' control
+        sed -i.bak 's/^Architecture: .*/Architecture: iphoneos-arm/' control
+        rm -f control.bak
         make package FINALPACKAGE=1 HP_ROOTFUL=1 -j1
     else
-        sed -i 's/^Architecture: .*/Architecture: iphoneos-arm64/' control
+        sed -i.bak 's/^Architecture: .*/Architecture: iphoneos-arm64/' control
+        rm -f control.bak
         make package FINALPACKAGE=1 -j1
     fi
 
@@ -75,6 +87,17 @@ build_scheme "rootful" "rootful (iphoneos-arm)" || exit 1
 echo
 echo "=== release artifacts ==="
 ls -la "$OUT"
+
+# The gate. v0.6.6 shipped an arm64e slice in the legacy unversioned ptrauth
+# ABI, which iOS 16.3.1 loads with truncated binds -- Settings and SpringBoard
+# both died on it. A build that links and packages cleanly can still be
+# unshippable, so the encoding is checked here rather than trusted.
+echo
+echo "=== fat / ABI check ==="
+if ! "$SRC/tools/check-fat.sh" "$OUT"; then
+    echo "!! the debs above are NOT releasable"
+    exit 1
+fi
 for deb in "$OUT"/*.deb; do
     echo
     echo "--- $(basename "$deb") ---"

@@ -1,0 +1,98 @@
+name: Build (macOS)
+
+# Where publishable debs come from now.
+#
+# The Linux toolchain's linker (ld64-609) emits arm64e in the legacy
+# unversioned ptrauth ABI: cpusubtype 0x00000002, chained-fixup pointer
+# format 1. iOS 16.3.1's dyld resolves that image's binds into the shared cache
+# with the high 32 bits truncated, so v0.6.6 crashed Settings while it was
+# still being mapped and took SpringBoard down with it. Xcode's linker on a
+# macOS runner is the only one within reach that emits the versioned ABI
+# (0x80000002 / ARM64E_USERLAND24).
+#
+# This workflow only BUILDS and VERIFIES. It uploads the two debs as artifacts;
+# release.yml still owns publishing, from docs/debs/. The round trip is:
+#
+#   Run workflow -> download the artifact -> unzip into release/
+#   -> tools/repo-build.sh -> tools/repo-publish.sh -> commit -> tag
+#
+# The WSL box stays the development rig; it just cannot produce a release.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'layout/**'
+      - 'Makefile'
+      - 'control'
+      - '*.plist'
+      - 'tools/build-release.sh'
+      - 'tools/check-fat.sh'
+      - 'tools/macho-abi.py'
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      THEOS: ${{ github.workspace }}/theos
+      IOS_SDK: iPhoneOS16.5.sdk      # what the debs are built against today
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # dpkg for dpkg-deb (macOS has none, and both the build and the ABI
+      # check need it); ldid for fake-signing.
+      - name: Install packaging tools
+        run: brew install ldid dpkg
+
+      - name: Cache Theos
+        id: theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}
+          key: theos-${{ env.IOS_SDK }}-v1
+
+      - name: Install Theos
+        if: steps.theos.outputs.cache-hit != 'true'
+        run: |
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          # One SDK, not the whole sdks repo, which is several GB.
+          git clone -n --depth 1 --filter=tree:0 https://github.com/theos/sdks.git /tmp/sdks
+          cd /tmp/sdks
+          git sparse-checkout set --no-cone "$IOS_SDK"
+          git checkout
+          mv "/tmp/sdks/$IOS_SDK" "$THEOS/sdks/"
+
+      # build-release.sh turns this into DonateURL.h. Passed through env rather
+      # than interpolated into the script: the URL contains '&'.
+      - name: Configure tip jar
+        env:
+          DONATE_URL: ${{ secrets.DONATE_URL }}
+        run: |
+          if [ -n "$DONATE_URL" ]; then
+            printf '%s' "$DONATE_URL" > donate-url.txt
+            echo "tip jar configured"
+          else
+            echo "no DONATE_URL secret set - the tip-jar row will be hidden"
+          fi
+
+      - name: Build both packages
+        run: bash tools/build-release.sh
+
+      # build-release.sh already ends with this and fails on a bad slice. Run
+      # again so the ABI verdict is its own line in the run summary: this is
+      # the step that says whether the arm64e problem is actually fixed, and it
+      # is the only proof available without an arm64e device.
+      - name: Verify the arm64e ABI
+        run: bash tools/check-fat.sh release/
+
+      - name: Upload the debs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debs
+          path: release/*.deb
+          if-no-files-found: warn
