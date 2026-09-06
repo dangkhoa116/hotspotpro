@@ -96,6 +96,29 @@ jobs:
       - name: Build both packages
         run: bash tools/build-release.sh
 
+      # Actions logs need admin rights to read through the API, but check-run
+      # annotations are public. build-release.sh tees everything to
+      # build-release.log, so on a failure the interesting lines are echoed as
+      # annotations where they can actually be read from outside.
+      - name: Surface the build log
+        if: failure()
+        run: |
+          LOG=build-release.log
+          if [ ! -f "$LOG" ]; then
+            echo "::error::build-release.log was never written"
+            exit 0
+          fi
+          echo "::group::build-release.log (tail)"
+          tail -120 "$LOG"
+          echo "::endgroup::"
+          {
+            grep -i -E 'error:|fatal|no such file|\*\*\*|cannot find|unsupported' "$LOG" | tail -6
+            echo '--- last lines ---'
+            grep -v '^[[:space:]]*$' "$LOG" | tail -6
+          } | sed 's/%/%25/g' | while IFS= read -r l; do
+            echo "::error::$l"
+          done
+
       # build-release.sh already ends with this and fails on a bad slice. Run
       # again so the ABI verdict is its own line in the run summary: this is
       # the step that says whether the arm64e problem is actually fixed, and it
