@@ -115,25 +115,25 @@ jobs:
           echo "::group::build-release.log (tail)"
           tail -120 "$LOG"
           echo "::endgroup::"
-          {
-            grep -i -E 'error:|fatal|no such file|\*\*\*|cannot find|unsupported|^ld:|not found' "$LOG" | tail -8
-            echo '--- last lines ---'
-            grep -v '^[[:space:]]*$' "$LOG" | tail -6
-          } | sed 's/%/%25/g' | while IFS= read -r l; do
-            echo "::error::$l"
-          done
-          # build-release.sh tees through a process substitution, which loses
-          # its last lines at exit -- so if debs were produced, the verdict
-          # that actually matters is re-derived here rather than read back.
+
+          # Only ten annotations per step survive, so spend them on the
+          # verdict. build-release.sh tees through a process substitution,
+          # which drops its last lines at exit, so if debs were produced the
+          # check is re-run here rather than read back out of the log.
           if ls release/*.deb >/dev/null 2>&1; then
             bash tools/check-fat.sh release/ > /tmp/abi.txt 2>&1 || true
             echo "::group::fat/ABI check"
             cat /tmp/abi.txt
             echo "::endgroup::"
-            grep -E 'arm64e|FAIL|passed|Traceback|command not found' /tmp/abi.txt \
-              | head -12 | sed 's/%/%25/g' | while IFS= read -r l; do
-                echo "::error::ABI $l"
-              done
+            { grep -E 'arm64e|Traceback|command not found|FAILED|passed' /tmp/abi.txt | head -8
+              grep -E '^FAIL' /tmp/abi.txt | head -2
+            } | sed 's/%/%25/g' | while IFS= read -r l; do
+              echo "::error::ABI $l"
+            done
+          else
+            echo "::error::no debs were produced"
+            grep -i -E 'error:|fatal|\*\*\*|^ld:|not found' "$LOG" | tail -8 \
+              | sed 's/%/%25/g' | while IFS= read -r l; do echo "::error::$l"; done
           fi
 
       # build-release.sh already ends with this and fails on a bad slice. Run
