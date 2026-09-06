@@ -99,6 +99,13 @@ the Makefile would break the build.
 
 ## Changelog
 
+**0.6.7**
+- Fixes a crash where Settings would not open and the phone resprang, on some
+  devices and iOS versions. The arm64e build carried an ABI marker that newer
+  versions of iOS reject; releases are now built with Apple's own linker and
+  the binaries are checked before publishing.
+- Thanks to @DrAhmedHesham, who independently diagnosed the same cause.
+
 **0.6.6**
 - Split into two dylibs, so SpringBoard no longer loads `Preferences.framework`
   or the UI code. A fault in the interface can no longer stop the phone booting.

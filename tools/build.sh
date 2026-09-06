@@ -2,16 +2,28 @@
 # Builds the HotspotPro .deb. Run as builder.
 #   wsl -d Ubuntu -u builder -- bash /mnt/c/Users/DangKhoa/HotspotPro/tools/build.sh
 
-export THEOS="$HOME/theos"
-export PATH="$THEOS/toolchain/linux/host/bin:$PATH"
+export THEOS="${THEOS:-$HOME/theos}"
+
+# The Linux toolchain's own clang, added only where it exists -- a macOS box
+# has Xcode instead.
+if [ -d "$THEOS/toolchain/linux/host/bin" ]; then
+    export PATH="$THEOS/toolchain/linux/host/bin:$PATH"
+fi
+
+# Derived, not hardcoded, so the script runs from wherever the tree is.
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Write our own log so output survives regardless of how the caller captures it.
-LOG=/mnt/c/Users/DangKhoa/HotspotPro/build.log
+LOG="$SRC/build.log"
 exec > >(tee "$LOG") 2>&1
 echo "=== build started $(date) ==="
 
 echo '=== toolchain ==='
-"$THEOS/toolchain/linux/iphone/bin/clang" --version 2>/dev/null | head -1 || echo 'clang MISSING'
+if [ -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then
+    "$THEOS/toolchain/linux/iphone/bin/clang" --version 2>/dev/null | head -1
+else
+    xcrun clang --version 2>/dev/null | head -1 || echo 'clang MISSING'
+fi
 echo
 echo '=== sdks ==='
 ls "$THEOS/sdks"
@@ -19,7 +31,6 @@ echo
 echo '=== building ==='
 # Build in a Linux-native dir: Theos + WSL1 on a /mnt/c DrvFs path hits
 # permission and symlink problems, so copy the sources across first.
-SRC=/mnt/c/Users/DangKhoa/HotspotPro
 WORK="$HOME/HotspotPro"
 mkdir -p "$WORK"
 # Sources live in src/ but are copied FLAT into the build dir, which is why the

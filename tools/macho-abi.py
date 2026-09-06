@@ -234,10 +234,25 @@ def check(path, name):
         print("  %-26s not a Mach-O, skipped" % name)
         return []
 
+    fails = []
+
+    # A fat header that disagrees with the slice it points at means the file
+    # was assembled wrong, and every reading below it would be of the wrong
+    # bytes. Check before trusting any of it.
     for sl in slices:
+        if sl.size < 32 or sl.offset + sl.size > len(data):
+            fails.append("%s: %s slice lies outside the file"
+                         % (name, sl.arch))
+            continue
+        magic, cputype, cpusubtype = struct.unpack(
+            "<III", data[sl.offset:sl.offset + 12])
+        if magic not in (0xFEEDFACF, 0xFEEDFACE):
+            fails.append("%s: %s slice is not a Mach-O" % (name, sl.arch))
+        elif (cputype, cpusubtype) != (sl.cputype, sl.cpusubtype):
+            fails.append("%s: fat header and %s slice header disagree"
+                         % (name, sl.arch))
         parse_slice(data, sl)
 
-    fails = []
     print("  %s" % name)
 
     for sl in slices:
