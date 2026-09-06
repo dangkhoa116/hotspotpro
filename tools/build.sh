@@ -1,59 +1,36 @@
 #!/usr/bin/env bash
-# Builds the HotspotPro .deb. Run as builder.
-#   wsl -d Ubuntu -u builder -- bash /mnt/c/Users/DangKhoa/HotspotPro/tools/build.sh
-
-export THEOS="$HOME/theos"
-export PATH="$THEOS/toolchain/linux/host/bin:$PATH"
-
-# Write our own log so output survives regardless of how the caller captures it.
-LOG=/mnt/c/Users/DangKhoa/HotspotPro/build.log
-exec > >(tee "$LOG") 2>&1
-echo "=== build started $(date) ==="
-
-echo '=== toolchain ==='
-"$THEOS/toolchain/linux/iphone/bin/clang" --version 2>/dev/null | head -1 || echo 'clang MISSING'
-echo
-echo '=== sdks ==='
-ls "$THEOS/sdks"
-echo
-echo '=== building ==='
-# Build in a Linux-native dir: Theos + WSL1 on a /mnt/c DrvFs path hits
-# permission and symlink problems, so copy the sources across first.
-SRC=/mnt/c/Users/DangKhoa/HotspotPro
-WORK="$HOME/HotspotPro"
-mkdir -p "$WORK"
-# Sources live in src/ but are copied FLAT into the build dir, which is why the
-# Makefile still names them bare (Tweak.x, Collector.m, ...). Keep it that way:
-# the flattening is what lets the tree be organised without touching Theos.
-cp -f "$SRC"/src/*.m "$SRC"/src/*.h "$SRC"/src/*.x "$WORK"/ 2>/dev/null
-cp -f "$SRC"/Makefile "$SRC"/control "$SRC"/*.plist "$WORK"/ 2>/dev/null
+# Build in a temporary native filesystem directory, keeping source names flat.
+set -euo pipefail
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
+export THEOS="${THEOS:-$HOME/theos}"
+if [ "$(uname -s)" = Linux ]; then
+    export PATH="$THEOS/toolchain/linux/host/bin:$PATH"
+fi
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/hotspotpro-build.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$WORK/module-cache}"
+cp "$SRC"/src/*.m "$SRC"/src/*.h "$SRC"/src/*.x "$WORK/"
+cp "$SRC/Makefile" "$SRC/control" "$SRC"/*.plist "$WORK/"
+cp -R "$SRC/layout" "$WORK/"
+chmod 755 "$WORK/layout/DEBIAN/postinst" "$WORK/layout/DEBIAN/prerm"
 if [ -s "$SRC/donate-url.txt" ]; then
-    printf '#define HP_DONATE_URL "%s"\n' "$(cat "$SRC/donate-url.txt")" > "$WORK/DonateURL.h"
-else
-    rm -f "$WORK/DonateURL.h"
+    python3 - "$SRC/donate-url.txt" "$WORK/DonateURL.h" <<'PY'
+import json, pathlib, sys
+url = pathlib.Path(sys.argv[1]).read_text().strip()
+pathlib.Path(sys.argv[2]).write_text('#define HP_DONATE_URL ' + json.dumps(url) + '\n')
+PY
 fi
-# layout/ carries the LaunchDaemon plist and the DEBIAN maintainer scripts.
-rm -rf "$WORK/layout"
-cp -r "$SRC"/layout "$WORK"/ 2>/dev/null
-chmod 755 "$WORK"/layout/DEBIAN/postinst "$WORK"/layout/DEBIAN/prerm 2>/dev/null
-cd "$WORK"
-
-# NOTE: 'make clean' hangs under WSL 1 here, so wipe the build dirs directly
-# instead. Same effect, no stall.
-rm -rf .theos packages
-
-make package FINALPACKAGE=1 -j1 2>&1
-RC=$?
-echo
-echo "make exit=$RC"
-echo '=== packages ==='
-ls -la "$WORK/packages" 2>/dev/null || echo '(none)'
-
-# Copy any built deb back to the Windows side
-if ls "$WORK"/packages/*.deb >/dev/null 2>&1; then
-    mkdir -p "$SRC/packages"
-    cp -f "$WORK"/packages/*.deb "$SRC/packages/"
-    echo "copied to $SRC/packages/"
-    ls -la "$SRC/packages/"
+if [ "${HP_ROOTFUL:-0}" = 1 ]; then
+    python3 - "$WORK/control" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+p.write_text(p.read_text().replace('Architecture: iphoneos-arm64', 'Architecture: iphoneos-arm'))
+PY
 fi
-exit $RC
+# Serial make also avoids hangs in the older make shipped with Xcode.
+make -C "$WORK" all FINALPACKAGE=1 "$@" -j1
+python3 "$SRC/tools/check-arm64e.py" "$WORK"/.theos/obj/HotspotPro*.dylib \
+    "$WORK/.theos/obj/hotspotpro" "$WORK/.theos/obj/hotspotprod"
+make -C "$WORK" package FINALPACKAGE=1 "$@" -j1
+mkdir -p "$SRC/packages"
+cp "$WORK"/packages/*.deb "$SRC/packages/"
