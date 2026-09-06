@@ -73,6 +73,13 @@ done
 cd "$DOCS"
 : > Packages
 
+# The cache-buster is a hash of the rendered depictions, not the version.
+# 0.6.7 went out with a changelog that still said 0.6.6; fixing it and
+# republishing under the same ?v=0.6.7 changed nothing on the phone, because
+# Sileo had already cached that URL. A content hash changes whenever the
+# depiction does, version bump or not, and stays put when it does not.
+DEPSTAMP="$(cat depiction.json depiction.html 2>/dev/null | md5sum | cut -c1-8)"
+
 for deb in debs/*.deb; do
     dpkg-deb -f "$deb" |
         grep -v -E '^(Filename|Size|MD5sum|SHA1|SHA256|Depiction|SileoDepiction|Icon):' >> Packages
@@ -89,9 +96,11 @@ for deb in debs/*.deb; do
         # ?v= is cache-busting, not decoration. Sileo and GitHub Pages both
         # cache depictions, so a fixed URL means users keep seeing the previous
         # release's depiction — including a broken one — long after it is fixed.
+        # Hence the content hash rather than the version: a correction within
+        # one release has to change the URL too, or nobody sees it.
         echo "Icon: $BASE_URL/CydiaIcon.png?v=$VERSION"
-        echo "Depiction: $BASE_URL/depiction.html?v=$VERSION"
-        echo "SileoDepiction: $BASE_URL/depiction.json?v=$VERSION"
+        echo "Depiction: $BASE_URL/depiction.html?v=$VERSION-$DEPSTAMP"
+        echo "SileoDepiction: $BASE_URL/depiction.json?v=$VERSION-$DEPSTAMP"
         echo "Homepage: $BASE_URL"
         echo
     } >> Packages
