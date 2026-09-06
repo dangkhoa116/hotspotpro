@@ -11,6 +11,14 @@ on:
   push:
     tags:
       - 'v*'
+  # Lets an existing release's notes be regenerated after the fact, from
+  # Actions -> Release -> Run workflow. Nothing is deleted, so download
+  # counts survive.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish, e.g. v0.6.6'
+        required: true
 
 permissions:
   contents: write        # required to create a release and upload assets
@@ -20,24 +28,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Create release with both packages
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -e
           # docs/debs holds the packages the repo serves, so the release and the
           # APT repo are guaranteed to be the same bytes.
           ls -la docs/debs/*.deb
 
-          gh release create "$GITHUB_REF_NAME" docs/debs/*.deb \
-            --title "HotspotPro $GITHUB_REF_NAME" \
-            --notes "Personal Hotspot usage, connected devices and data limits.
+          # The release notes carry the same changelog Sileo shows. README.md is
+          # the single source: the section runs from **<version>** to the next
+          # **<version>** heading. Without this the notes were a fixed string, so
+          # every release read identically and said nothing about what changed.
+          VERSION="${TAG#v}"
+          awk -v want="**$VERSION**" '
+            $0 == want { grab = 1; next }
+            grab && /^\*\*[0-9]/ { exit }
+            grab { print }
+          ' README.md > changes.md
 
-          Install from the repo instead of downloading by hand:
-          https://dangkhoa116.github.io/hotspotpro/
+          {
+            if [ -s changes.md ]; then
+              cat changes.md
+            else
+              echo "Personal Hotspot usage, connected devices and data limits."
+              echo
+            fi
+            echo "Install from the repo rather than downloading by hand:"
+            echo "https://dangkhoa116.github.io/hotspotpro/"
+            echo
+            echo '- `iphoneos-arm64` — rootless (Dopamine, palera1n rootless, Xina)'
+            echo '- `iphoneos-arm` — rootful (unc0ver, checkra1n, palera1n rootful)'
+            echo
+            echo "Both carry arm64 and arm64e slices."
+          } > notes.md
 
-          - \`iphoneos-arm64\` — rootless (Dopamine, palera1n rootless, Xina)
-          - \`iphoneos-arm\` — rootful (unc0ver, checkra1n, palera1n rootful)
+          cat notes.md
 
-          Both carry arm64 and arm64e slices."
+          # Re-running on an existing tag updates it in place. Deleting and
+          # recreating would reset the asset download counts.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "HotspotPro $TAG" --notes-file notes.md
+            gh release upload "$TAG" docs/debs/*.deb --clobber
+          else
+            gh release create "$TAG" docs/debs/*.deb \
+              --title "HotspotPro $TAG" --notes-file notes.md
+          fi
