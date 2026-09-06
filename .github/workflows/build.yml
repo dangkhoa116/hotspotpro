@@ -122,6 +122,19 @@ jobs:
           } | sed 's/%/%25/g' | while IFS= read -r l; do
             echo "::error::$l"
           done
+          # build-release.sh tees through a process substitution, which loses
+          # its last lines at exit -- so if debs were produced, the verdict
+          # that actually matters is re-derived here rather than read back.
+          if ls release/*.deb >/dev/null 2>&1; then
+            bash tools/check-fat.sh release/ > /tmp/abi.txt 2>&1 || true
+            echo "::group::fat/ABI check"
+            cat /tmp/abi.txt
+            echo "::endgroup::"
+            grep -E 'arm64e|FAIL|passed|Traceback|command not found' /tmp/abi.txt \
+              | head -12 | sed 's/%/%25/g' | while IFS= read -r l; do
+                echo "::error::ABI $l"
+              done
+          fi
 
       # build-release.sh already ends with this and fails on a bad slice. Run
       # again so the ABI verdict is its own line in the run summary: this is
