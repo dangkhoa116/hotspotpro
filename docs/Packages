@@ -7,16 +7,16 @@ Section: Networking
 Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0), firmware (<< 18.0)
 Tag: purpose::extension, role::enduser
 Architecture: iphoneos-arm
-Version: 0.5.5
-Installed-Size: 1012
-Filename: https://github.com/dangkhoa116/hotspotpro/releases/download/v0.5.5/com.dangkhoa.hotspotpro_0.5.5_iphoneos-arm.deb
-Size: 90380
-MD5sum: 53ca5aff0e8202c380f42bd176b07707
-SHA1: 28e482dc77aadb8030ade6d895aff7d6b2202dc3
-SHA256: 1c64f0f0532207c9d2c2769c36695f129ebfab268f9fcf4b98840a5675a0d332
-Icon: https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png?v=0.5.5
-Depiction: https://dangkhoa116.github.io/hotspotpro/depiction.html?v=0.5.5
-SileoDepiction: https://dangkhoa116.github.io/hotspotpro/depiction.json?v=0.5.5
+Version: 0.6.6
+Installed-Size: 1356
+Filename: https://github.com/dangkhoa116/hotspotpro/releases/download/v0.6.6/com.dangkhoa.hotspotpro_0.6.6_iphoneos-arm.deb
+Size: 104406
+MD5sum: 753ab6bafe7e6bf138a7896ff967b47c
+SHA1: 364203b18a4642ce8ca3d3125f3c192912926cbc
+SHA256: ca1c8bea06a48beb05aa09713f24680b3e58cb1adbca48124c884f79c28a5ccd
+Icon: https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png?v=0.6.6
+Depiction: https://dangkhoa116.github.io/hotspotpro/depiction.html?v=0.6.6
+SileoDepiction: https://dangkhoa116.github.io/hotspotpro/depiction.json?v=0.6.6
 Homepage: https://dangkhoa116.github.io/hotspotpro
 
 Package: com.dangkhoa.hotspotpro
@@ -28,15 +28,15 @@ Section: Networking
 Depends: mobilesubstrate (>= 0.9.5000), firmware (>= 14.0), firmware (<< 18.0)
 Tag: purpose::extension, role::enduser
 Architecture: iphoneos-arm64
-Version: 0.5.5
-Installed-Size: 1012
-Filename: https://github.com/dangkhoa116/hotspotpro/releases/download/v0.5.5/com.dangkhoa.hotspotpro_0.5.5_iphoneos-arm64.deb
-Size: 90304
-MD5sum: 29c6ab07366067008e04182e78353dc9
-SHA1: fad7ad59de724a9838deeba1bb9897e6fd425a00
-SHA256: 8cd4f5610c8fdd99a68b6eb77176c1e48894cf0c4ec072d2a924156fec9186cc
-Icon: https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png?v=0.5.5
-Depiction: https://dangkhoa116.github.io/hotspotpro/depiction.html?v=0.5.5
-SileoDepiction: https://dangkhoa116.github.io/hotspotpro/depiction.json?v=0.5.5
+Version: 0.6.6
+Installed-Size: 1356
+Filename: https://github.com/dangkhoa116/hotspotpro/releases/download/v0.6.6/com.dangkhoa.hotspotpro_0.6.6_iphoneos-arm64.deb
+Size: 104396
+MD5sum: 1b6ed7478ed6f915b8aef684a5cd805b
+SHA1: 0681effe6775e12332ec0c22eaa7617193dd930a
+SHA256: 8bc4f97bb75270d37f2804e1219bcd325a09f90ea0d7e119f5d7bdff1570b90c
+Icon: https://dangkhoa116.github.io/hotspotpro/CydiaIcon.png?v=0.6.6
+Depiction: https://dangkhoa116.github.io/hotspotpro/depiction.html?v=0.6.6
+SileoDepiction: https://dangkhoa116.github.io/hotspotpro/depiction.json?v=0.6.6
 Homepage: https://dangkhoa116.github.io/hotspotpro
 

@@ -7,10 +7,10 @@ Architectures: iphoneos-arm iphoneos-arm64
 Components: main
 Description: Personal Hotspot usage, connected devices and data limits
 MD5Sum:
- a88860c70ac938d6695b27aed8a739ea 2016 Packages
- e49b36ff19a5db8b8a891f9eb3a482a8 680 Packages.gz
- e45c6ebb9d9d2e625e45dd5efd3bf5bc 827 Packages.bz2
+ 40b9453a38b1c9bac59986a541058ac0 2018 Packages
+ 5c643d275b9e2fccb5a54c52381e0b7d 679 Packages.gz
+ 75577c765e78305f19d33bc8888ed79f 824 Packages.bz2
 SHA256:
- ba6a780692326c218584832a18b35ed072640601451ff1909f728c2ce917ba61 2016 Packages
- 86eff6911f904799fddaadb0ce66b0bac326a3944d333f9533fc9ddca2704e28 680 Packages.gz
- 36adf0411dd3aa3f8d1b666fab9581661e56f06e40a00d6096674b6632eb784d 827 Packages.bz2
+ c0ad38c8cd0cd42e2984fb56811680c749e635bf6af2ef5d176948e637a214c4 2018 Packages
+ 18ae714b7a2547cfaf65a51a8b99fdac7011ab8c4b01546a3b9671a556143eae 679 Packages.gz
+ 3a02e53e2d30b0cc6d7dac7e6f30441d934996dc37cf06cda049b27e6f0a91ef 824 Packages.bz2
