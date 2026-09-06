@@ -53,18 +53,32 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.THEOS }}
-          key: theos-${{ env.IOS_SDK }}-v1
+          key: theos-${{ env.IOS_SDK }}-v2
 
       - name: Install Theos
         if: steps.theos.outputs.cache-hit != 'true'
         run: |
           git clone --recursive https://github.com/theos/theos.git "$THEOS"
+          # mkdir first: a clean Theos checkout has no sdks/, and `mv` into a
+          # path that does not exist RENAMES the SDK to it, scattering the
+          # SDK's contents where the directory should be.
+          mkdir -p "$THEOS/sdks"
           # One SDK, not the whole sdks repo, which is several GB.
           git clone -n --depth 1 --filter=tree:0 https://github.com/theos/sdks.git /tmp/sdks
           cd /tmp/sdks
           git sparse-checkout set --no-cone "$IOS_SDK"
           git checkout
-          mv "/tmp/sdks/$IOS_SDK" "$THEOS/sdks/"
+          mv "/tmp/sdks/$IOS_SDK" "$THEOS/sdks/$IOS_SDK"
+
+      # Its own step so a failure here is legible from the run's step list
+      # alone -- Actions logs need admin rights to read through the API.
+      - name: Check the toolchain and SDK
+        run: |
+          xcodebuild -version
+          ld -v 2>&1 | head -2
+          ls -la "$THEOS/sdks"
+          test -d "$THEOS/sdks/$IOS_SDK/usr/include" \
+            || { echo "::error::$IOS_SDK is not laid out correctly under $THEOS/sdks"; exit 1; }
 
       # build-release.sh turns this into DonateURL.h. Passed through env rather
       # than interpolated into the script: the URL contains '&'.
