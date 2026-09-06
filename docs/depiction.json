@@ -78,7 +78,7 @@
       "views": [
         {
           "class": "DepictionMarkdownView",
-          "markdown": "**0.6.6**\n• Split into two extensions so SpringBoard no longer loads the Settings UI or its private framework — a bug in the interface can no longer stop the phone booting\n• Wakes when the system reports a network change instead of polling on a timer, so an idle phone is left alone and a new hotspot session is picked up at once\n• The hotspot status and the connected-device list now update within seconds of a device joining, and clear about half a minute after it leaves, instead of lingering for minutes"
+          "markdown": "**0.6.6**\n• Split in two, so a bug in the Settings interface can no longer stop the phone booting\n• Wakes on network changes instead of polling, for less battery use\n• Hotspot status and the device list update much faster"
         },
         { "class": "DepictionSeparatorView" },
         {

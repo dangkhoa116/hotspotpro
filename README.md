@@ -100,24 +100,10 @@ the Makefile would break the build.
 ## Changelog
 
 **0.6.6**
-- Split into two dylibs: `HotspotPro.dylib` (SpringBoard) and
-  `HotspotProSettings.dylib` (Preferences). Previously one dylib served both,
-  so SpringBoard loaded `Preferences.framework` at launch — a private UI
-  framework it never otherwise loads, before any of the tweak's own guards
-  could run. A fault in the UI code could therefore stop the phone booting;
-  now its worst case is a Settings pane that misbehaves. `tools/check-links.sh`
-  enforces it.
-- Event-driven instead of polling. Both the daemon and the collector watch a
-  `PF_ROUTE` socket, which the kernel writes to when an interface or address
-  changes — so a hotspot session is noticed the moment it starts, and an idle
-  phone is not woken to be told nothing happened.
-- Presence is reported promptly in both directions. The pane reads live rather
-  than from the state file, so a device appears as it joins; "Hotspot off" now
-  settles in about 6 seconds instead of 15; and a departed device clears in
-  roughly 40 seconds instead of sitting in the list for minutes. The ARP table
-  only ever says a client *was* here, so departure is judged from the daemon's
-  traffic record, gated on its flush heartbeat — per-client timestamps cannot
-  do it, because when the last client leaves they all go stale together.
+- Split into two dylibs, so SpringBoard no longer loads `Preferences.framework`
+  or the UI code. A fault in the interface can no longer stop the phone booting.
+- Event-driven on a `PF_ROUTE` socket instead of polling on a timer.
+- Faster presence: status settles in ~6s, departed devices clear in ~40s.
 
 **0.5.5**
 - Per-device limit options are round numbers (100 MB, 250 MB, 500 MB). They
