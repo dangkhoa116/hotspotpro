@@ -23,6 +23,17 @@ fi
 GITHUB="${GITHUB_URL:-$(cat "$SRC/github-url.txt" 2>/dev/null || echo "https://github.com/CHANGEME/HotspotPro")}"
 VERSION="$(grep '^Version:' "$SRC/control" | cut -d' ' -f2)"
 
+# The Sileo changelog is hand-written in web/depiction.json, in plain language
+# rather than README's technical notes, so it is the one thing a version bump
+# does not carry with it. 0.6.7 shipped with a changelog whose newest entry
+# still said 0.6.6; this is what catches that.
+DEP_TOP="$(grep -o '\*\*[0-9][0-9.]*\*\*' "$SRC/web/depiction.json" | head -1 | tr -d '*')"
+if [ "$DEP_TOP" != "$VERSION" ]; then
+    echo "control says $VERSION but the newest changelog entry in"
+    echo "web/depiction.json is $DEP_TOP — add it before publishing."
+    exit 1
+fi
+
 # Optional: serve the packages from a GitHub release instead of from Pages.
 #
 #   HP_RELEASE_TAG=v0.5.2 ./repo-build.sh
