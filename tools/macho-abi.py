@@ -14,11 +14,11 @@
 # THE BUG IT EXISTS FOR (found from crash logs, 2026-09-06, v0.6.6)
 #
 # ld64-609, the linker in the Theos Linux toolchain, emits arm64e in the legacy
-# unversioned ABI: cpusubtype 0x00000002 with the CPU_SUBTYPE_PTRAUTH_ABI bit
-# clear, and chained fixups in DYLD_CHAINED_PTR_ARM64E (format 1) rather than
-# ARM64E_USERLAND24 (format 12). Every real iOS 15+ arm64e binary is the other
-# way round -- ElleKit's own libinjector.dylib, read off the test device, is
-# cpusubtype 0x80000002.
+# unversioned ABI: cpusubtype 0x00000002, with the CPU_SUBTYPE_PTRAUTH_ABI bit
+# clear. Every real arm64e binary has that bit set -- ElleKit's own
+# libinjector.dylib, read off the test device, is cpusubtype 0x80000002, and so
+# is PreferenceLoader, which is installed on practically every jailbroken
+# device. That bit, not the fixup format, is the defect.
 #
 # Some dyld builds tolerate the legacy encoding. iOS 16.3.1's does not: binds
 # into the dyld shared cache lose their high 32 bits, so a class pointer that
@@ -58,8 +58,10 @@ LC_BUILD_VERSION = 0x32
 LC_DYLD_INFO_ONLY = 0x80000022
 LC_DYLD_CHAINED_FIXUPS = 0x80000034
 
-# Pointer formats a modern arm64e userland image may use. Format 1 is the
-# legacy one this whole file exists to reject.
+# Pointer formats. ARM64E (1) is NOT a defect: PreferenceLoader 2.2.6-1, built
+# with an Apple toolchain and installed on practically every jailbroken device,
+# is cpusubtype 0x80000002 with format 1 at minos 14.0. The formats worth
+# refusing are the ones that are not userland images at all.
 POINTER_FORMATS = {
     1: "ARM64E",
     2: "PTR_64",
@@ -70,7 +72,7 @@ POINTER_FORMATS = {
     10: "ARM64E_FIRMWARE",
     12: "ARM64E_USERLAND24",
 }
-MODERN_ARM64E_FORMATS = (9, 12)
+USERLAND_ARM64E_FORMATS = (1, 9, 12)      # ARM64E, ARM64E_USERLAND, ..._24
 
 
 class Slice(object):
@@ -270,13 +272,14 @@ def check(path, name):
             fails.append(
                 "%s: arm64e slice is the legacy unversioned ptrauth ABI "
                 "(cpusubtype 0x%08x, want 0x80000002)" % (name, sl.cpusubtype))
-        # 3. Modern chained-fixup encoding. Format 1 is the legacy arm64e
-        #    format whose binds iOS 16.3.1 resolves wrongly.
-        bad = [f for f in sl.pointer_formats if f not in MODERN_ARM64E_FORMATS]
+        # 3. A userland chained-fixup encoding. All three userland formats are
+        #    fine -- see the note by POINTER_FORMATS -- but a kernel or
+        #    firmware format in a tweak means something went badly wrong.
+        bad = [f for f in sl.pointer_formats if f not in USERLAND_ARM64E_FORMATS]
         for f in sorted(set(bad)):
             fails.append(
                 "%s: arm64e slice uses chained-fixup pointer format %d (%s), "
-                "want 9 or 12 (ARM64E_USERLAND[24])"
+                "which is not a userland format"
                 % (name, f, POINTER_FORMATS.get(f, "?")))
 
     return fails
