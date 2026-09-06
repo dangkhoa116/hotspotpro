@@ -62,14 +62,24 @@ build_scheme() {
     # package that overwrites the rootless one.
     # sed -i.bak, not sed -i: BSD sed on macOS reads the next argument as the
     # backup suffix, so the GNU spelling fails on the CI runner.
+    # The Makefile says `latest`, which on a machine that also has Xcode means
+    # Xcode's own iPhoneOS SDK -- and that one carries no PrivateFrameworks
+    # stubs, so HotspotProSettings fails to link against Preferences.framework.
+    # HP_TARGET pins it there. Empty here, where the only SDK is the right one.
+    local target=""
+    if [ -n "${HP_TARGET:-}" ]; then
+        target="TARGET=$HP_TARGET"
+        echo "target: $HP_TARGET"
+    fi
+
     if [ "$scheme" = "rootful" ]; then
         sed -i.bak 's/^Architecture: .*/Architecture: iphoneos-arm/' control
         rm -f control.bak
-        make package FINALPACKAGE=1 HP_ROOTFUL=1 -j1
+        make package FINALPACKAGE=1 HP_ROOTFUL=1 $target -j1
     else
         sed -i.bak 's/^Architecture: .*/Architecture: iphoneos-arm64/' control
         rm -f control.bak
-        make package FINALPACKAGE=1 -j1
+        make package FINALPACKAGE=1 $target -j1
     fi
 
     local rc=$?

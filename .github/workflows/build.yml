@@ -39,6 +39,10 @@ jobs:
     env:
       THEOS: ${{ github.workspace }}/theos
       IOS_SDK: iPhoneOS16.5.sdk      # what the debs are built against today
+      # The Makefile's TARGET says `latest`, which here would mean Xcode's own
+      # iPhoneOS SDK -- no PrivateFrameworks stubs, so HotspotProSettings does
+      # not link. Keep this in step with IOS_SDK above.
+      HP_TARGET: iphone:clang:16.5:14.0
 
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +116,7 @@ jobs:
           tail -120 "$LOG"
           echo "::endgroup::"
           {
-            grep -i -E 'error:|fatal|no such file|\*\*\*|cannot find|unsupported' "$LOG" | tail -6
+            grep -i -E 'error:|fatal|no such file|\*\*\*|cannot find|unsupported|^ld:|not found' "$LOG" | tail -8
             echo '--- last lines ---'
             grep -v '^[[:space:]]*$' "$LOG" | tail -6
           } | sed 's/%/%25/g' | while IFS= read -r l; do
