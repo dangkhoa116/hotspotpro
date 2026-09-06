@@ -2,6 +2,7 @@
 packages/
 release/
 repo/
+lanrepo/
 *.log
 hotspotpro-bin
 
