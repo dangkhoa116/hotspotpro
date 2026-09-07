@@ -370,23 +370,22 @@ static int HPCommandSelftest(void) {
            HPFilterPresentDevices(arp, longAgo, tapSince, at(HPMissesNeeded),
                                   NO, books, at(HPMissesNeeded)).count, 0);
 
-    // Probing shortens the window without changing the rule: silence in the
-    // face of unanswered ARP requests means more than silence alone.
-    NSDictionary *quietAWhile = @{ quiet : at(-2 * HPSilentCutoffProbed) };
-    books = [NSMutableDictionary dictionary];
-    for (int i = 0; i <= HPMissesNeeded; i++) {
-        HPFilterPresentDevices(arp, quietAWhile, tapSince, at(0), NO, books, at(i));
+    // Presence uses the conservative window whether or not the daemon is
+    // probing: an idle device that is silent for a couple of minutes is still
+    // connected, and shortening the window on the strength of probes that may
+    // not draw a reply on a given device was hiding connected devices. So the
+    // same silence is not a departure under either flag.
+    NSDictionary *quietAWhile = @{ quiet : at(-120) };   // 2 min, inside the 4-min window
+    for (int flag = 0; flag <= 1; flag++) {
+        books = [NSMutableDictionary dictionary];
+        for (int i = 0; i <= HPMissesNeeded; i++) {
+            HPFilterPresentDevices(arp, quietAWhile, tapSince, at(0), flag, books, at(i));
+        }
+        expect(flag ? @"2 min silent stays present even while probing"
+                    : @"2 min silent stays present when not probing",
+               HPFilterPresentDevices(arp, quietAWhile, tapSince, at(0),
+                                      flag, books, at(HPMissesNeeded + 1)).count, 1);
     }
-    expect(@"90s of silence is not a departure when nobody is asking",
-           HPFilterPresentDevices(arp, quietAWhile, tapSince, at(0),
-                                  NO, books, at(HPMissesNeeded + 1)).count, 1);
-    books = [NSMutableDictionary dictionary];
-    for (int i = 0; i < HPMissesNeeded; i++) {
-        HPFilterPresentDevices(arp, quietAWhile, tapSince, at(0), YES, books, at(i));
-    }
-    expect(@"...but it is when the client has been asked and did not answer",
-           HPFilterPresentDevices(arp, quietAWhile, tapSince, at(0),
-                                  YES, books, at(HPMissesNeeded)).count, 0);
 
     // The gates that must switch the rule off entirely: silence proves nothing
     // when nothing was listening.

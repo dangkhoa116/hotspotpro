@@ -595,7 +595,15 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
                                                 BOOL probing,
                                                 NSMutableDictionary *books,
                                                 NSDate *now) {
-    const NSTimeInterval cutoff = probing ? HPSilentCutoffProbed : HPSilentCutoff;
+    // Always the conservative window. The shorter probed window was dropping
+    // connected-but-idle devices whenever the ARP probe did not actually draw a
+    // reply on a given device — reporting "no devices" over a device plainly
+    // connected, which is the exact error this whole filter exists to avoid.
+    // Probing still helps when it works (a reply refreshes lastSeen and keeps
+    // the device present); it just no longer shortens the silence that counts
+    // as gone. `probing` is kept in the signature for the CLI's dump.
+    (void)probing;
+    const NSTimeInterval cutoff = HPSilentCutoff;
     NSMutableDictionary *lastExpire = HPBook(books, kHPBookExpire);
     NSMutableDictionary *lastLease  = HPBook(books, kHPBookLease);
     NSMutableDictionary *lastProof  = HPBook(books, kHPBookProof);

@@ -153,41 +153,6 @@ static NSArray *HPLiveConnectedDevices(void) {
     return HPCopyPresentDevices(HPHotspotInterfaceNames(ifaces)) ?: @[];
 }
 
-/// How long a device may be quiet before its row says so.
-///
-/// A third of whatever window is currently deciding presence, so the note is an
-/// early warning that this row is heading for the section below rather than an
-/// unrelated number: while the daemon is probing every 10s it means "missed at
-/// least one question", and while it is only listening it means "quiet for a
-/// while, which is normal". Tied to the window rather than fixed, because a
-/// fixed 60s would never once appear inside the 45s probed window.
-static NSTimeInterval HPIdleAfter(void) {
-    return (HPDaemonIsProbing() ? HPSilentCutoffProbed : HPSilentCutoff) / 3.0;
-}
-
-/// "40s", "6m", "2h 5m" — enough to judge staleness at a glance, no more.
-static NSString *HPShortAge(NSTimeInterval seconds) {
-    if (seconds < 0) seconds = 0;
-    if (seconds < 90) return [NSString stringWithFormat:@"%.0fs", seconds];
-    long minutes = (long)(seconds / 60.0);
-    if (minutes < 60) return [NSString stringWithFormat:@"%ldm", minutes];
-    return [NSString stringWithFormat:@"%ldh %ldm", minutes / 60, minutes % 60];
-}
-
-/// The daemon's per-client timestamps, re-read at most once a second. Every
-/// device row asks for these on the same refresh tick and each ask parses a
-/// plist, so without this the pane would parse it once per row per tick.
-static NSDictionary<NSString *, NSDate *> *HPLastSeenCached(void) {
-    static NSDictionary<NSString *, NSDate *> *cached;
-    static NSDate *readAt;
-    NSDate *now = [NSDate date];
-    if (!cached || !readAt || [now timeIntervalSinceDate:readAt] >= 1.0) {
-        cached = HPCopyDaemonLastSeen();
-        readAt = now;
-    }
-    return cached;
-}
-
 /// "Is the hotspot on", smoothed.
 ///
 /// Even with IP forwarding as the primary signal, a status row that samples
@@ -250,26 +215,8 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
 
     NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
     uint64_t bytes = [seen[mac][@"bytes"] unsignedLongLongValue];
-    NSDate *now = [NSDate date];
-
-    // Where the device is, and then how long it has been that way. A client
-    // that is connected but idle says so in place — the row does not simply
-    // stop looking any different from an active one and then, eventually,
-    // vanish into the section below with no explanation.
-    NSMutableString *where = [ip mutableCopy];
-    if ([ip isEqualToString:@"offline"]) {
-        NSDate *last = seen[mac][@"last"];
-        if (last) [where appendFormat:@" %@", HPShortAge([now timeIntervalSinceDate:last])];
-    } else {
-        NSDate *heard = HPLastSeenCached()[mac];
-        NSTimeInterval quiet = heard ? [now timeIntervalSinceDate:heard] : 0;
-        if (heard && quiet >= HPIdleAfter()) {
-            [where appendFormat:@" · idle %@", HPShortAge(quiet)];
-        }
-    }
-
-    if (bytes == 0) return where;
-    return [NSString stringWithFormat:@"%@ · %@", HPFormatBytes(bytes), where];
+    if (bytes == 0) return ip;
+    return [NSString stringWithFormat:@"%@ · %@", HPFormatBytes(bytes), ip];
 }
 
 - (id)seenValue:(PSSpecifier *)spec {
@@ -390,15 +337,29 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     // Live, matching what the rows are built from. Read from the state file
     // instead, this signature would not change when a device left, so the rows
     // would never be rebuilt and the departed device would stay on screen.
+    //
+    // The DISPLAYED name is included, not just the MAC: a row's title is fixed
+    // when the row is built, so a rename only shows once the rows are rebuilt,
+    // and the rebuild only happens when this signature changes. Renaming a
+    // connected device left the old name on screen until it reconnected.
+    NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
+    if (![nicknames isKindOfClass:[NSDictionary class]]) nicknames = @{};
     for (NSDictionary *d in HPLiveConnectedDevices()) {
-        [sig appendFormat:@"%@,", d[HPDevMacKey]];
+        NSString *mac = d[HPDevMacKey] ?: @"";
+        NSString *shown = [nicknames[mac] length] ? nicknames[mac]
+                                                  : (d[HPDevNameKey] ?: @"");
+        [sig appendFormat:@"%@=%@,", mac, shown];
     }
     [sig appendString:@"|"];
 
-    // Offline devices with usage get a row too, so they belong here.
+    // Offline devices with usage get a row too, so they belong here — with the
+    // name they display, for the same rename reason as above.
     NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
     for (NSString *mac in [seen.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        if ([seen[mac][@"bytes"] unsignedLongLongValue] > 0) [sig appendFormat:@"%@,", mac];
+        if ([seen[mac][@"bytes"] unsignedLongLongValue] == 0) continue;
+        NSString *shown = [nicknames[mac] length] ? nicknames[mac]
+                                                  : (seen[mac][@"name"] ?: mac);
+        [sig appendFormat:@"%@=%@,", mac, shown];
     }
     return sig;
 }
@@ -421,24 +382,6 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
     for (NSString *mac in [seen.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
         [sig appendFormat:@"%@:%@,", mac, seen[mac][@"bytes"]];
-    }
-
-    // The idle and offline notes on the device rows tick with the clock, so
-    // something here has to tick too — otherwise they would freeze at whatever
-    // they read when a byte total last happened to change. Bucketed to five
-    // seconds, and contributing nothing at all until a note is actually being
-    // shown, so a pane full of active devices stays perfectly still.
-    NSDate *now = [NSDate date];
-    NSDictionary<NSString *, NSDate *> *heard = HPCopyDaemonLastSeen();
-    [sig appendString:@"|"];
-    for (NSString *mac in [heard.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        NSTimeInterval quiet = [now timeIntervalSinceDate:heard[mac]];
-        if (quiet >= HPIdleAfter()) [sig appendFormat:@"%ld,", (long)(quiet / 5.0)];
-    }
-    for (NSString *mac in [seen.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        NSDate *last = seen[mac][@"last"];
-        if (!last || [seen[mac][@"bytes"] unsignedLongLongValue] == 0) continue;
-        [sig appendFormat:@"%ld,", (long)([now timeIntervalSinceDate:last] / 5.0)];
     }
     return sig;
 }
