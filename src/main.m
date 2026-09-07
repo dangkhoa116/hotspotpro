@@ -88,6 +88,36 @@ static void HPCommandDump(void) {
                 [(d[HPDevIPKey] ?: @"?") UTF8String],
                 d[HPDevMacKey]);
     }
+
+    // The evidence behind "who is here now", printed raw. The list above is the
+    // ARP table, which keeps a departed client's entry for the rest of its
+    // lifetime; whether a device is shown as connected or as offline turns on
+    // the numbers below, so this is the section to read when a device that is
+    // plainly connected is being reported as offline.
+    NSDate *now = [NSDate date];
+    NSDate *tapSince = HPDaemonTapSince();
+    NSDate *flush = HPDaemonLastFlush();
+    NSDictionary<NSString *, NSDate *> *lastSeen = HPCopyDaemonLastSeen();
+    HPPrint(@"\n=== daemon presence evidence ===");
+    HPPrint(@"Tap open for : %@",
+            tapSince ? [NSString stringWithFormat:@"%.0fs",
+                                 [now timeIntervalSinceDate:tapSince]]
+                     : @"no tap open");
+    HPPrint(@"Last flush   : %@",
+            flush ? [NSString stringWithFormat:@"%.0fs ago",
+                              [now timeIntervalSinceDate:flush]]
+                  : @"never (daemon not running?)");
+    if (lastSeen.count == 0) {
+        HPPrint(@"No per-client timestamps — nothing can be ruled offline.");
+    }
+    for (NSString *mac in lastSeen) {
+        HPPrint(@"  %-20s last frame %.0fs ago",
+                [mac UTF8String], [now timeIntervalSinceDate:lastSeen[mac]]);
+    }
+
+    // Deliberately no verdict here. HPCopyPresentDevices() reaches one across
+    // successive polls, so a one-shot process cannot ask it a fair question;
+    // `hotspotpro status` reads the collector's answer, which was.
 }
 
 #pragma mark - watch
@@ -247,6 +277,110 @@ static int HPCommandSelftest(void) {
     HPPrint(@"  '1,1e:7:67:bb:5b:3f' -> '%@'", mac);
     if (![mac isEqualToString:@"1e:07:67:bb:5b:3f"]) failures++;
 
+    // --- presence ----------------------------------------------------------
+    // Whether a connected device is shown as connected. The bug this pins is a
+    // device that never left being reported offline and then online again: the
+    // rule used to be "no captured frame in 30s means gone", and an idle client
+    // is silent for far longer than that.
+    HPPrint(@"\n=== presence ===");
+    NSString *quiet = @"aa:bb:cc:dd:ee:01";
+    NSDate *t0 = [NSDate dateWithTimeIntervalSince1970:1700000000];
+    NSDate *(^at)(NSTimeInterval) = ^(NSTimeInterval dt) {
+        return [t0 dateByAddingTimeInterval:dt];
+    };
+    NSArray *(^arpWithExpire)(NSNumber *) = ^(NSNumber *expire) {
+        return @[ @{ HPDevMacKey     : quiet,
+                     HPDevIPKey      : @"172.20.10.5",
+                     HPDevIfNameKey  : @"bridge100",
+                     HPDevExpiresKey : expire } ];
+    };
+    NSArray *arp = arpWithExpire(@1000);
+    // A tap that has been open far longer than the window, so silence counts.
+    NSDate *tapSince = at(-10 * HPSilentCutoff);
+
+    void (^expect)(NSString *, NSUInteger, NSUInteger) =
+        ^(NSString *what, NSUInteger got, NSUInteger want) {
+            if (got == want) {
+                HPPrint(@"  ok    %@ (%lu)", what, (unsigned long)got);
+            } else {
+                HPPrint(@"  FAIL  %@: got %lu, want %lu", what,
+                        (unsigned long)got, (unsigned long)want);
+                failures++;
+            }
+        };
+
+    // Heard recently: present, however long ago anything else happened.
+    NSMutableDictionary *books = [NSMutableDictionary dictionary];
+    expect(@"a client heard 10s ago is present",
+           HPFilterPresentDevices(arp, @{ quiet : at(-10) }, tapSince, at(0),
+                                  books, at(0)).count, 1);
+
+    // Regression: an idle client, silent past the window, whose ARP entry the
+    // kernel is still refreshing. Under the old rule this device vanished from
+    // the list and came back on its next packet; the refreshed expiry is
+    // independent evidence that it is still reachable.
+    books = [NSMutableDictionary dictionary];
+    NSDictionary *longAgo = @{ quiet : at(-10 * HPSilentCutoff) };
+    HPFilterPresentDevices(arpWithExpire(@1000), longAgo, tapSince, at(0), books, at(0));
+    for (int i = 1; i <= HPMissesNeeded + 1; i++) {
+        NSArray *out = HPFilterPresentDevices(arpWithExpire(@(1000 + i * 30)), longAgo,
+                                              tapSince, at(i), books, at(i));
+        if (out.count != 1) {
+            HPPrint(@"  FAIL  idle client with a refreshed ARP entry dropped on poll %d", i);
+            failures++;
+            break;
+        }
+        if (i == HPMissesNeeded + 1) {
+            HPPrint(@"  ok    an idle client the kernel still reaches stays present");
+        }
+    }
+
+    // One silent poll is not a departure, and neither are two.
+    books = [NSMutableDictionary dictionary];
+    for (int i = 1; i < HPMissesNeeded; i++) {
+        expect([NSString stringWithFormat:@"silent poll %d does not drop it", i],
+               HPFilterPresentDevices(arp, longAgo, tapSince, at(i), books, at(i)).count, 1);
+    }
+    // ...but a client with nothing to show for itself, poll after poll, is gone.
+    expect(@"a client silent past the window is dropped",
+           HPFilterPresentDevices(arp, longAgo, tapSince, at(HPMissesNeeded),
+                                  books, at(HPMissesNeeded)).count, 0);
+
+    // The gates that must switch the rule off entirely: silence proves nothing
+    // when nothing was listening.
+    books = [NSMutableDictionary dictionary];
+    for (int i = 0; i <= HPMissesNeeded; i++) {
+        HPFilterPresentDevices(arp, longAgo, at(-1), at(0), books, at(i));
+    }
+    expect(@"a tap open for less than the window rules nobody out",
+           HPFilterPresentDevices(arp, longAgo, at(-1), at(0),
+                                  books, at(HPMissesNeeded + 1)).count, 1);
+
+    books = [NSMutableDictionary dictionary];
+    for (int i = 0; i <= HPMissesNeeded; i++) {
+        HPFilterPresentDevices(arp, longAgo, tapSince,
+                               at(-2 * HPDaemonStaleAfter), books, at(i));
+    }
+    expect(@"a stale daemon heartbeat rules nobody out",
+           HPFilterPresentDevices(arp, longAgo, tapSince, at(-2 * HPDaemonStaleAfter),
+                                  books, at(HPMissesNeeded + 1)).count, 1);
+
+    books = [NSMutableDictionary dictionary];
+    for (int i = 0; i <= HPMissesNeeded; i++) {
+        HPFilterPresentDevices(arp, @{}, tapSince, at(0), books, at(i));
+    }
+    expect(@"no daemon data at all rules nobody out",
+           HPFilterPresentDevices(arp, @{}, tapSince, at(0),
+                                  books, at(HPMissesNeeded + 1)).count, 1);
+
+    // Bookkeeping must not accumulate a row per randomised MAC forever.
+    books = [NSMutableDictionary dictionary];
+    HPFilterPresentDevices(arp, longAgo, tapSince, at(0), books, at(0));
+    HPFilterPresentDevices(@[], longAgo, tapSince, at(1), books, at(1));
+    NSUInteger left = 0;
+    for (NSString *k in books) left += [books[k] count];
+    expect(@"bookkeeping is forgotten with the ARP entry", left, 0);
+
     return failures;
 }
 
@@ -286,7 +420,8 @@ static void HPCommandClasses(void) {
 
 static void HPUsage(void) {
     HPPrint(@"hotspotpro — Personal Hotspot usage, devices and limits\n");
-    HPPrint(@"  dump              interfaces, counters, arp, leases, devices");
+    HPPrint(@"  dump              interfaces, counters, arp, leases, devices,");
+    HPPrint(@"                    and the evidence behind who counts as present");
     HPPrint(@"  watch [secs] [--log]  per-interval deltas (default 5) — the measurement");
     HPPrint(@"  tick              take one sample and fold it into state");
     HPPrint(@"  status            current period, limit and devices");

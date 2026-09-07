@@ -532,6 +532,182 @@ NSArray<NSDictionary *> *HPCopyConnectedDevices(NSArray<NSString *> *hotspotIfNa
     return out;
 }
 
+#pragma mark - Presence
+
+// How long a client may go completely unheard — no captured frame, no ARP
+// refresh, no lease renewal — before it is treated as gone.
+//
+// Minutes rather than seconds, because an idle client really is silent for
+// minutes. Nothing obliges an associated device sitting in a pocket with its
+// screen off to put a frame on the air: between an ARP for the gateway, an mDNS
+// announcement and a DHCP renewal there can be several quiet minutes. A
+// thirty-second window declared those devices departed the moment they went
+// quiet and reinstated them on the next stray packet, so a device that had
+// never gone anywhere flickered between "connected" and "offline" for as long
+// as the pane was open. The cost of the wider window is that a device that
+// really has left lingers for a few minutes; showing a present device as
+// offline is the worse of the two errors.
+const NSTimeInterval HPSilentCutoff = 240.0;
+
+// How stale the daemon's own heartbeat may be before its silence stops meaning
+// anything. It flushes every 10s while its tap is open, whether or not any
+// traffic arrived.
+const NSTimeInterval HPDaemonStaleAfter = 30.0;
+
+// Consecutive evaluations with no evidence before a device already on the list
+// is dropped. One unlucky sample must not be able to move a row.
+const int HPMissesNeeded = 3;
+
+// Every row of the pane asks this question on the same refresh tick. Below this
+// age the previous answer is handed straight back, so the rows cannot disagree
+// with the count above them, and the state machine advances once per tick
+// rather than once per caller.
+static const NSTimeInterval kHPPresenceCoalesce = 1.0;
+
+// Sub-dictionaries of the bookkeeping the filter carries between calls.
+static NSString *const kHPBookExpire = @"expire";   // mac -> last rmx_expire seen
+static NSString *const kHPBookLease  = @"lease";    // mac -> last lease end seen
+static NSString *const kHPBookProof  = @"proof";    // mac -> when last proved present
+static NSString *const kHPBookMisses = @"misses";   // mac -> consecutive silent polls
+
+static NSMutableDictionary *HPBook(NSMutableDictionary *books, NSString *key) {
+    NSMutableDictionary *book = books[key];
+    if (!book) {
+        book = [NSMutableDictionary dictionary];
+        books[key] = book;
+    }
+    return book;
+}
+
+NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
+                                                NSDictionary<NSString *, NSDate *> *lastSeen,
+                                                NSDate *tapSince,
+                                                NSDate *lastFlush,
+                                                NSMutableDictionary *books,
+                                                NSDate *now) {
+    NSMutableDictionary *lastExpire = HPBook(books, kHPBookExpire);
+    NSMutableDictionary *lastLease  = HPBook(books, kHPBookLease);
+    NSMutableDictionary *lastProof  = HPBook(books, kHPBookProof);
+    NSMutableDictionary *misses     = HPBook(books, kHPBookMisses);
+
+    // The daemon's tap is the only thing that can turn silence into a
+    // departure, and only while it is demonstrably capturing.
+    BOOL beating = lastFlush && [now timeIntervalSinceDate:lastFlush] <= HPDaemonStaleAfter;
+
+    // A tap cannot report silence for longer than it has been listening. Right
+    // after the daemon starts, or after the bridge flapped and the tap was
+    // reopened, every stamp is old through no fault of the client — so no
+    // departure may be inferred until the tap has been open for the whole
+    // window it is being asked to interpret.
+    BOOL canProveDeparture = beating && lastSeen.count > 0 && tapSince &&
+        [now timeIntervalSinceDate:tapSince] >= HPSilentCutoff;
+
+    NSMutableArray *present = [NSMutableArray array];
+    NSMutableSet<NSString *> *live = [NSMutableSet set];
+
+    for (NSDictionary *dev in arp) {
+        NSString *mac = dev[HPDevMacKey] ?: @"";
+        [live addObject:mac];
+
+        // Evidence 1: the daemon's tap captured a frame at one end or the other
+        // of this client within the window. It sees sent frames too, so a
+        // client that only receives still counts.
+        NSDate *seen = lastSeen[mac];
+        BOOL heard = seen && [now timeIntervalSinceDate:seen] <= HPSilentCutoff;
+
+        // Evidence 2: the kernel pushed this ARP entry's expiry further out,
+        // which it only does having heard from the neighbour. Compared against
+        // its own previous value and never against the clock — what units
+        // rt_expire is kept in is not worth assuming, whereas "larger than it
+        // was a moment ago" needs no assumption at all.
+        NSNumber *expire = dev[HPDevExpiresKey];
+        NSNumber *wasExpire = lastExpire[mac];
+        BOOL refreshed = expire && wasExpire &&
+            [expire compare:wasExpire] == NSOrderedDescending;
+        if (expire) lastExpire[mac] = expire;
+
+        // Evidence 3: the client renewed its DHCP lease, which it can only do
+        // from here.
+        NSDate *lease = dev[HPDevLeaseEndKey];
+        NSDate *wasLease = lastLease[mac];
+        BOOL renewed = lease && wasLease &&
+            [lease compare:wasLease] == NSOrderedDescending;
+        if (lease) lastLease[mac] = lease;
+
+        if (heard || refreshed || renewed) {
+            lastProof[mac] = now;
+            misses[mac] = @0;
+            [present addObject:dev];
+            continue;
+        }
+
+        // Nothing heard this round. With no daemon data, or a tap that has not
+        // been listening long enough, that means nothing: absence of evidence
+        // is not evidence of departure.
+        if (!canProveDeparture) {
+            [present addObject:dev];
+            continue;
+        }
+
+        // A device has to fail repeatedly AND have been unheard for the whole
+        // window before it is dropped — the same hysteresis the hotspot status
+        // row uses, for the same reason. A MAC with no proof on record has only
+        // just been polled for the first time; the tap's own stamps, which
+        // survive across daemon restarts, decide that one.
+        int m = [misses[mac] intValue] + 1;
+        misses[mac] = @(m);
+        NSDate *proof = lastProof[mac];
+        NSTimeInterval quiet = proof ? [now timeIntervalSinceDate:proof]
+                                     : HPSilentCutoff;
+        if (m >= HPMissesNeeded && quiet >= HPSilentCutoff) continue;
+        [present addObject:dev];
+    }
+
+    // Forget the bookkeeping for MACs the ARP table no longer carries, or these
+    // four dictionaries would grow for the life of the process. A client with a
+    // randomised MAC mints a new one on every reconnect.
+    for (NSMutableDictionary *book in @[lastExpire, lastLease, lastProof, misses]) {
+        for (NSString *mac in [book.allKeys copy]) {
+            if (![live containsObject:mac]) [book removeObjectForKey:mac];
+        }
+    }
+    return present;
+}
+
+NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfNames) {
+    static NSObject *lock;
+    static NSMutableDictionary *books;
+    static NSArray<NSDictionary *> *cached;
+    static NSDate *cachedAt;
+    static NSString *cachedKey;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        lock  = [NSObject new];
+        books = [NSMutableDictionary dictionary];
+    });
+
+    @synchronized (lock) {
+        NSDate *now = [NSDate date];
+        NSString *key = [hotspotIfNames componentsJoinedByString:@","] ?: @"";
+        if (cached && cachedAt && [cachedKey isEqualToString:key] &&
+            [now timeIntervalSinceDate:cachedAt] < kHPPresenceCoalesce) {
+            return cached;
+        }
+
+        NSArray *present =
+            HPFilterPresentDevices(HPCopyConnectedDevices(hotspotIfNames) ?: @[],
+                                   HPCopyDaemonLastSeen(),
+                                   HPDaemonTapSince(),
+                                   HPDaemonLastFlush(),
+                                   books,
+                                   now);
+        cached    = [present copy];
+        cachedAt  = now;
+        cachedKey = key;
+        return cached;
+    }
+}
+
 #pragma mark - Per-device bytes (from the daemon)
 
 NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
@@ -539,6 +715,13 @@ NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
                               @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
     NSDictionary *bytes = file[@"bytesByMac"];
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
+}
+
+NSDate *HPDaemonTapSince(void) {
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
+                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDate *since = file[@"tapSince"];
+    return [since isKindOfClass:[NSDate class]] ? since : nil;
 }
 
 NSDate *HPDaemonLastFlush(void) {

@@ -41,7 +41,12 @@ means a reset can never race a sample.
   tethering. Measured on-device: `bridge100` counts every forwarded packet
   *twice*, so counting the bridge would double your usage.
 - **Device names** — `/var/db/dhcpd_leases`, the hotspot's own DHCP records.
-- **Who is connected** — the ARP table, filtered to the hotspot subnet.
+- **Who is connected** — the ARP table, filtered to the hotspot subnet, minus
+  the clients that have left. ARP only ever records that a device *was* here, so
+  a departure is inferred from three independent signals going quiet together:
+  the daemon's packet tap, the kernel's ARP expiry and the DHCP lease end. The
+  window is minutes, because an idle client is silent for minutes — a
+  thirty-second one reported connected devices as offline and back again.
 - **Per-device bytes** — a BPF tap on the tethering bridge with a 14-byte snap
   length, so the kernel copies only each frame's Ethernet header while the
   frame's true length is still counted. Reads are batched; with the hotspot off

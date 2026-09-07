@@ -122,6 +122,14 @@ BOOL HPHotspotIsActive(NSArray<NSDictionary *> *ifaces);
 /// not running, so callers must treat absence as "unknown", not "gone".
 NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void);
 
+/// When the daemon's current packet tap was opened, or nil when it has none.
+///
+/// Silence only means something once the tap has been listening for longer than
+/// the silence being interpreted: the tap closes and reopens whenever the
+/// tethering bridge flaps, and every per-client timestamp is stale for a while
+/// afterwards through no fault of the clients.
+NSDate *HPDaemonTapSince(void);
+
 /// When the daemon last wrote its counters — every 10s while its tap is open,
 /// whether or not any traffic arrived. This is the heartbeat that says "the
 /// silence of a given client means something", which per-client timestamps
@@ -187,6 +195,43 @@ NSArray<NSDictionary *> *HPCopyDhcpLeases(void);
 /// Devices connected right now: ARP neighbours on the hotspot interfaces,
 /// joined to lease records by MAC so they carry a name where one is known.
 NSArray<NSDictionary *> *HPCopyConnectedDevices(NSArray<NSString *> *hotspotIfNames);
+
+/// The same list with the devices that have actually left taken out.
+///
+/// HPCopyConnectedDevices() reports what the ARP table claims, and the ARP
+/// table only ever records that a client *was* here: a departed device's entry
+/// stops being refreshed and sits there counting down for the rest of its
+/// lifetime. This is the function to ask "who is connected right now".
+///
+/// A device stays on the list unless three independent signals all say nothing
+/// has been heard from it — the root daemon's packet tap, the kernel's ARP
+/// expiry, and the DHCP lease end — for several minutes running, and even then
+/// only once the tap has demonstrably been listening for that whole span. An
+/// idle client is silent for minutes at a time, so anything less flickers.
+///
+/// Keeps a little per-process state, so successive calls are what makes it
+/// work; calls within the same second share one answer, which is what keeps
+/// every row of a pane agreeing with the count above it.
+NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfNames);
+
+// The thresholds the rule above turns on, exposed so a test can express itself
+// in terms of them rather than restating the numbers.
+extern const NSTimeInterval HPSilentCutoff;      // unheard this long -> gone
+extern const NSTimeInterval HPDaemonStaleAfter;  // heartbeat older than this means nothing
+extern const int HPMissesNeeded;                 // consecutive silent polls before dropping
+
+/// The presence rule itself, with every input passed in.
+///
+/// Split out from HPCopyPresentDevices() so it can be exercised without a
+/// hotspot, a daemon or a clock: `hotspotpro selftest` drives it. `books` holds
+/// what the rule remembers between polls — an empty mutable dictionary on the
+/// first call, the same one thereafter — and `now` is the moment being judged.
+NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
+                                                NSDictionary<NSString *, NSDate *> *lastSeen,
+                                                NSDate *tapSince,
+                                                NSDate *lastFlush,
+                                                NSMutableDictionary *books,
+                                                NSDate *now);
 
 #pragma mark - Helpers
 

@@ -74,6 +74,11 @@ static const NSTimeInterval kFlushInterval = 10.0;
 static NSMutableDictionary<NSString *, NSNumber *> *gBytesByMac;
 static NSMutableDictionary<NSString *, NSDate *> *gLastSeenByMac;
 static NSMutableSet<NSString *> *gTouchedMacs;
+// When the tap now open was opened, or nil while there is none. Published so
+// readers can tell "this client has been silent" from "nobody was listening":
+// after a bridge flap every per-client timestamp is stale at once, and a reader
+// that could not see the difference declared connected devices departed.
+static NSDate *gTapSince;
 static NSString *gDevicesPath = @"/var/mobile/Library/Caches/hotspotpro-devices.plist";
 
 // A client with a randomised MAC mints a new entry every time it reconnects, so
@@ -126,7 +131,6 @@ static void HPPruneDevices(void) {
 
 /// Counters are written where the tweak (running as mobile) can read them.
 static void HPFlushCounters(void) {
-    if (!gBytesByMac.count) return;
     @try {
         // Stamp only the devices that actually moved data since the last flush,
         // so timestamps cost nothing per packet.
@@ -136,11 +140,14 @@ static void HPFlushCounters(void) {
         HPPruneDevices();
 
         NSString *tmp = [gDevicesPath stringByAppendingPathExtension:@"tmp"];
-        NSDictionary *payload = @{
+        NSMutableDictionary *payload = [@{
             @"bytesByMac"   : gBytesByMac,
             @"lastSeenByMac": gLastSeenByMac,
             @"updated"      : [NSDate date],
-        };
+        } mutableCopy];
+        // Absent rather than null while there is no tap, so a reader that finds
+        // it knows a tap was open at the moment this was written.
+        if (gTapSince) payload[@"tapSince"] = gTapSince;
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:payload
                                                                   format:NSPropertyListXMLFormat_v1_0
                                                                  options:0
@@ -472,6 +479,7 @@ int main(int argc, char *argv[]) {
                         close(fd);
                         fd = -1;
                         bridgeName = nil;
+                        gTapSince = nil;
                         HPFlushCounters();
                     }
                     // Tracking off must not leave anyone cut off.
@@ -496,6 +504,7 @@ int main(int argc, char *argv[]) {
                     close(fd);
                     fd = -1;
                     bridgeName = nil;
+                    gTapSince = nil;
                     HPFlushCounters();
                 }
 
@@ -508,6 +517,7 @@ int main(int argc, char *argv[]) {
                         sleep(30);
                         continue;
                     }
+                    gTapSince = [NSDate date];
                 }
 
                 if (fd < 0) {
@@ -564,6 +574,7 @@ int main(int argc, char *argv[]) {
                         if (errno != ENXIO) HPDaemonLog(@"read: %s", strerror(errno));
                         close(fd);
                         fd = -1;
+                        gTapSince = nil;
                         HPFlushCounters();
                     }
                 }

@@ -142,53 +142,15 @@ static HPSettingsHelper *gHelper;
 ///
 /// Byte totals still come from the state file: those are the collector's to
 /// compute, and only presence needs to be current.
+///
+/// The judgement of which ARP neighbours have actually left lives in the
+/// collector, so that this pane, the summary row on the stock pane and the
+/// refresh signatures all reach the same answer from one piece of code —
+/// three call sites deciding it separately is how the count in the status row
+/// came to contradict the rows underneath it.
 static NSArray *HPLiveConnectedDevices(void) {
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
-    NSArray *arp = HPCopyConnectedDevices(HPHotspotInterfaceNames(ifaces)) ?: @[];
-
-    // The ARP table records that a client was here; it never records that one
-    // left. A departed device's entry simply stops being refreshed and sits
-    // there counting down, so it kept appearing as connected for minutes after
-    // disconnecting. The daemon's tap supplies the missing half: a frame
-    // actually received, with a timestamp. Anything silent for a while is gone.
-    //
-    // rmx_expire looks like it should answer this and does not reliably — how
-    // often the kernel refreshes it is a detail nobody here has measured, and a
-    // wrong guess would hide devices that are genuinely connected.
-    NSDictionary<NSString *, NSDate *> *lastSeen = HPCopyDaemonLastSeen();
-    if (lastSeen.count == 0) return arp;   // no daemon data: unknown, not gone
-
-    // How long a client may go unheard before it is treated as gone. Its last
-    // frame is stamped at the next flush, up to 10s later, so the real delay is
-    // this plus about ten seconds.
-    static const NSTimeInterval kSilentCutoff = 30.0;
-    // How stale the daemon's own heartbeat may be before its silence stops
-    // meaning anything.
-    static const NSTimeInterval kDaemonStale = 30.0;
-    NSDate *now = [NSDate date];
-
-    // Only trust this filter while the daemon is demonstrably capturing: its tap
-    // closes whenever the bridge flaps, and every per-client timestamp then ages
-    // at once, which once hid devices that were connected throughout.
-    //
-    // The gate is the daemon's own flush time, not the freshest per-client
-    // stamp. Those are the same thing until the last client leaves — at which
-    // point traffic stops, every client stamp goes stale together, and a
-    // freshest-stamp gate would switch the filter off exactly when it was needed
-    // and leave the departed device on screen. The flush heartbeat keeps
-    // ticking every 10s regardless of traffic.
-    NSDate *heartbeat = HPDaemonLastFlush();
-    if (!heartbeat || [now timeIntervalSinceDate:heartbeat] > kDaemonStale) return arp;
-    NSMutableArray *present = [NSMutableArray array];
-    for (NSDictionary *dev in arp) {
-        NSDate *seen = lastSeen[dev[HPDevMacKey]];
-        // A MAC the daemon has no record of has usually just joined and not
-        // been flushed yet. Keep it: never invent a departure from silence.
-        if (!seen || [now timeIntervalSinceDate:seen] <= kSilentCutoff) {
-            [present addObject:dev];
-        }
-    }
-    return present;
+    return HPCopyPresentDevices(HPHotspotInterfaceNames(ifaces)) ?: @[];
 }
 
 /// "Is the hotspot on", smoothed.
@@ -278,7 +240,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     NSDictionary *state = HPStateLoad();
     uint64_t total = [state[HPStTotalBytesKey] unsignedLongLongValue];
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
-    NSUInteger devices = HPCopyConnectedDevices(HPHotspotInterfaceNames(ifaces)).count;
+    NSUInteger devices = HPCopyPresentDevices(HPHotspotInterfaceNames(ifaces)).count;
 
     NSString *summary;
     if (devices > 0) {
@@ -400,7 +362,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     // byte total happened to change.
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
     [sig appendFormat:@"%d|%lu|", (int)HPHotspotIsActiveSmoothed(ifaces),
-                      (unsigned long)HPCopyConnectedDevices(
+                      (unsigned long)HPCopyPresentDevices(
                           HPHotspotInterfaceNames(ifaces)).count];
 
     NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
