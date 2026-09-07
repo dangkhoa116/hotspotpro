@@ -136,6 +136,13 @@ NSDate *HPDaemonTapSince(void);
 /// be judged on a much shorter window when this is true.
 BOOL HPDaemonIsProbing(void);
 
+/// The daemon's own breadcrumb: what it is doing and why, or nil when it has
+/// never run. Keys: "state" (NSString — "gated-ios18", "tracking-off",
+/// "no-bpf", "hotspot-off", "running", "running-noprobe", "starting"), "pid",
+/// "firmware", and "updated" (NSDate). Nil is itself an answer: the LaunchDaemon
+/// never bootstrapped, or the device refused to exec the binary.
+NSDictionary *HPCopyDaemonStatus(void);
+
 /// The client MACs the daemon has an active reject route installed for, as of
 /// its last flush. This is what is *actually* enforced, which is not the same
 /// as what the tracker decided should be blocked: they diverge when the daemon

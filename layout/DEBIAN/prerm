@@ -22,5 +22,6 @@ launchctl unload "$PREFIX/Library/LaunchDaemons/com.dangkhoa.hotspotpro.plist" >
 
 rm -f /var/mobile/Library/Caches/hotspotpro-blocklist.plist
 rm -f /var/mobile/Library/Caches/hotspotpro-installed.plist
+rm -f /var/mobile/Library/Caches/hotspotpro-daemon.plist
 
 exit 0

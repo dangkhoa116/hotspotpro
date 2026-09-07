@@ -98,6 +98,21 @@ static void HPCommandDump(void) {
     NSDate *tapSince = HPDaemonTapSince();
     NSDate *flush = HPDaemonLastFlush();
     NSDictionary<NSString *, NSDate *> *lastSeen = HPCopyDaemonLastSeen();
+    // The daemon's own account of itself. Read this first when per-device
+    // numbers or blocking are missing: it says whether the helper is running
+    // and, if it is, why it might be doing nothing.
+    NSDictionary *daemon = HPCopyDaemonStatus();
+    HPPrint(@"\n=== daemon ===");
+    if (!daemon) {
+        HPPrint(@"No status file — the helper has never run on this device.");
+        HPPrint(@"Check:  launchctl print system/com.dangkhoa.hotspotpro");
+    } else {
+        HPPrint(@"State    : %@", daemon[@"state"] ?: @"?");
+        HPPrint(@"PID      : %@", daemon[@"pid"] ?: @"?");
+        HPPrint(@"Firmware : %@", daemon[@"firmware"] ?: @"?");
+        HPPrint(@"As of    : %@", daemon[@"updated"] ?: @"?");
+    }
+
     HPPrint(@"\n=== daemon presence evidence ===");
     HPPrint(@"Tap open for : %@",
             tapSince ? [NSString stringWithFormat:@"%.0fs",

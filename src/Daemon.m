@@ -86,6 +86,15 @@ static NSDate *gTapSince;
 static BOOL gCanProbe;
 static NSString *gDevicesPath = @"/var/mobile/Library/Caches/hotspotpro-devices.plist";
 
+// A one-line breadcrumb saying what this process is doing, so the UI and CLI
+// can explain why per-device figures or blocking are absent instead of only
+// showing "helper not running". Written on startup and at each state change —
+// never in a tight loop — so it cannot become the 8,600-writes-a-day problem
+// the state file once was. Its absence means the binary never ran at all, which
+// is itself the answer (a LaunchDaemon that never bootstrapped, or a signature
+// the device refused to exec).
+static NSString *gStatusPath = @"/var/mobile/Library/Caches/hotspotpro-daemon.plist";
+
 // A client with a randomised MAC mints a new entry every time it reconnects, so
 // without a bound this file would grow for the life of the install.
 static const NSTimeInterval kMaxDeviceAge = 60 * 60 * 24 * 45;   // 45 days
@@ -98,6 +107,27 @@ static void HPDaemonLog(NSString *format, ...) {
     NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
     HPLog(@"[daemon] %@", msg);
+}
+
+/// Record what the daemon is doing right now. No-op when the state has not
+/// changed since the last call, so it is safe to call from inside the loop.
+static void HPWriteDaemonStatus(NSString *state) {
+    static NSString *last;
+    if ([state isEqualToString:last]) return;
+    last = state;
+    @try {
+        NSDictionary *payload = @{
+            @"state"    : state,
+            @"pid"      : @(getpid()),
+            @"firmware" : [[NSProcessInfo processInfo] operatingSystemVersionString] ?: @"?",
+            @"updated"  : [NSDate date],
+        };
+        [payload writeToFile:gStatusPath atomically:YES];
+        [[NSFileManager defaultManager] setAttributes:@{ NSFilePosixPermissions : @0644 }
+                                         ofItemAtPath:gStatusPath error:NULL];
+    } @catch (NSException *e) {
+        HPDaemonLog(@"status write failed: %@", e);
+    }
 }
 
 /// Forget devices that stopped appearing long ago, and cap the total.
@@ -599,8 +629,10 @@ int main(int argc, char *argv[]) {
         NSOperatingSystemVersion ios18 = { 18, 0, 0 };
         if ([[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:ios18]) {
             HPDaemonLog(@"iOS 18+ — untested firmware, exiting without tapping");
+            HPWriteDaemonStatus(@"gated-ios18");
             return 0;
         }
+        HPWriteDaemonStatus(@"starting");
 
         HPClearStaleBlocks();
 
@@ -650,6 +682,7 @@ int main(int argc, char *argv[]) {
                 // is captured and nothing is counted, and idle cheaply until it
                 // is switched back on.
                 if (![HPConfig()[HPCfgEnabledKey] boolValue]) {
+                    HPWriteDaemonStatus(@"tracking-off");
                     if (fd >= 0) {
                         HPDaemonLog(@"tracking disabled, closing tap");
                         close(fd);
@@ -690,10 +723,12 @@ int main(int argc, char *argv[]) {
                     fd = HPOpenBPF(bridgeName);
                     if (fd < 0) {
                         // Do not spin retrying a tap that cannot be opened.
+                        HPWriteDaemonStatus(@"no-bpf");
                         sleep(30);
                         continue;
                     }
                     gTapSince = [NSDate date];
+                    HPWriteDaemonStatus(gCanProbe ? @"running" : @"running-noprobe");
                     // Ask straight away rather than waiting out the first
                     // interval: a client that attached before the tap opened
                     // has no timestamp at all until something is heard from it.
@@ -701,6 +736,7 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (fd < 0) {
+                    HPWriteDaemonStatus(@"hotspot-off");
                     // Hotspot off. Rather than waking on a timer to ask whether
                     // anything changed, block until the kernel says so: the
                     // routing socket becomes readable the moment an interface

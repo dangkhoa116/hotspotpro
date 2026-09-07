@@ -754,7 +754,14 @@ static NSArray *HPBuildBodySpecifiers(void) {
         NSDate *flush = HPDaemonLastFlush();
         BOOL daemonAlive = flush && [[NSDate date] timeIntervalSinceDate:flush] <= 60.0;
         if (enforced && daemonAlive) return @"Blocked — over its limit";
-        return @"Over limit — not enforced (helper not running)";
+        // Not actually cut off. Name why, from the daemon's own breadcrumb, so
+        // this is a lead rather than a dead end.
+        NSString *state = HPCopyDaemonStatus()[@"state"];
+        NSString *why = @"helper not running";
+        if ([state isEqualToString:@"gated-ios18"])   why = @"unsupported on iOS 18";
+        else if ([state isEqualToString:@"tracking-off"]) why = @"tracking is off";
+        else if ([state isEqualToString:@"no-bpf"])   why = @"helper can't capture";
+        return [NSString stringWithFormat:@"Over limit — not enforced (%@)", why];
     }
 
     double limit = [HPConfig()[HPCfgDeviceLimitsKey][mac] doubleValue];
