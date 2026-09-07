@@ -78,9 +78,6 @@ static NSMutableSet<NSString *> *gTouchedMacs;
 // after a bridge flap every per-client timestamp is stale at once, and a reader
 // that could not see the difference declared connected devices departed.
 static NSDate *gTapSince;
-// Whether the tap could be opened for writing, and so whether the presence
-// probes below are actually going out. Published, because a reader that assumed
-// probing while it was not happening would rule live devices absent.
 static NSString *gDevicesPath = @"/var/mobile/Library/Caches/hotspotpro-devices.plist";
 
 // A one-line breadcrumb saying what this process is doing, so the UI and CLI
