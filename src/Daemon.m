@@ -269,8 +269,27 @@ static BOOL HPSetRouteBlock(NSString *ip, BOOL blocked) {
                     strerror(failure));
         return NO;
     }
-    HPDaemonLog(@"%@ %@", blocked ? @"blocked" : @"unblocked", ip);
+    // Announce only a real change (failure 0). EEXIST/ESRCH mean nothing moved,
+    // so the whole-subnet sweep below can call this for every client address
+    // without filling the log with "unblocked" lines for routes that were never
+    // there.
+    if (failure == 0) HPDaemonLog(@"%@ %@", blocked ? @"blocked" : @"unblocked", ip);
     return YES;
+}
+
+/// Delete any reject route sitting on a hotspot client address, tracked or not.
+///
+/// iOS hands clients 172.20.10.2 .. .14 (a /28, .1 is the phone, .15 broadcast),
+/// so sweeping that whole range clears a block no matter how it got there.
+/// This is the backstop that makes a block impossible to strand: a daemon
+/// killed between installing a route and recording it leaves an orphan that
+/// gInstalledBlocks and the installed-plist never knew about, which used to
+/// survive until a reboot. Deleting a route that is not there is a harmless
+/// ESRCH, so this is safe to run unconditionally.
+static void HPSweepHotspotRejectRoutes(void) {
+    for (int host = 2; host <= 14; host++) {
+        HPSetRouteBlock([NSString stringWithFormat:@"172.20.10.%d", host], NO);
+    }
 }
 
 static void HPSaveInstalledBlocks(void) {
@@ -487,6 +506,10 @@ int main(int argc, char *argv[]) {
         HPWriteDaemonStatus(@"starting");
 
         HPClearStaleBlocks();
+        // And sweep the whole client range, so an orphan route no tracking file
+        // remembers — left by a daemon that was killed mid-block — is gone by
+        // the next start rather than surviving until a reboot.
+        HPSweepHotspotRejectRoutes();
 
         // Counters survive a hotspot session; they are cumulative since the
         // daemon started, and the tweak turns them into per-period figures by
@@ -542,15 +565,16 @@ int main(int argc, char *argv[]) {
                         gTapSince = nil;
                         HPFlushCounters();
                     }
-                    // Tracking off must not leave anyone cut off.
+                    // Tracking off must not leave anyone cut off. Clear what we
+                    // tracked, then sweep the whole client range so an orphan
+                    // route we no longer remember cannot strand a device —
+                    // which is exactly what made a blocked device stay cut off
+                    // even after tracking was switched off.
                     if (gInstalledBlocks.count) {
-                        for (NSString *mac in [gInstalledBlocks.allKeys copy]) {
-                            if (HPSetRouteBlock(gInstalledBlocks[mac], NO)) {
-                                [gInstalledBlocks removeObjectForKey:mac];
-                            }
-                        }
+                        [gInstalledBlocks removeAllObjects];
                         HPSaveInstalledBlocks();
                     }
+                    HPSweepHotspotRejectRoutes();
                     sleep(15);
                     continue;
                 }
