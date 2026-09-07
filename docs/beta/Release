@@ -1,0 +1,16 @@
+Origin: HotspotPro (beta)
+Label: HotspotPro (beta)
+Suite: beta
+Version: 1.0
+Codename: hotspotpro-beta
+Architectures: iphoneos-arm iphoneos-arm64
+Components: main
+Description: HotspotPro pre-release test builds
+MD5Sum:
+ e86b3872062147ff00c36aa6799527b2 2030 Packages
+ c0ad3942ee33ab2a38acb5095ccfc1be 670 Packages.gz
+ 9efe63f01ebb91966091ce16445e84fd 824 Packages.bz2
+SHA256:
+ 704aa25a0241c67e0821b5d04f414f3724a9a95e03587e84592b2cc785e913db 2030 Packages
+ 776202b743e3b9560811d7c4b74c9390740f0b3675378b7104957c19d32badbb 670 Packages.gz
+ 9e961582419e9c164638cda34da5c9d31b16af0f41c38cb657362c1e5141533a 824 Packages.bz2

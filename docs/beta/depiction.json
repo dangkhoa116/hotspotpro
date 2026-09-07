@@ -1,0 +1,111 @@
+{
+  "minVersion": "0.1",
+  "class": "DepictionTabView",
+  "headerImage": "https://dangkhoa116.github.io/hotspotpro/beta/CydiaIcon.png",
+  "tintColor": "#17a06f",
+  "tabs": [
+    {
+      "tabname": "Details",
+      "class": "DepictionStackView",
+      "views": [
+        {
+          "class": "DepictionScreenshotsView",
+          "itemCornerRadius": 8,
+          "itemSize": "{160, 284}",
+          "screenshots": [
+            {
+              "url": "https://dangkhoa116.github.io/hotspotpro/beta/screenshots/1-hotspot-pane.jpg",
+              "accessibilityText": "The Hotspot Usage row in the stock Personal Hotspot pane"
+            },
+            {
+              "url": "https://dangkhoa116.github.io/hotspotpro/beta/screenshots/2-usage.jpg",
+              "accessibilityText": "Usage this period, connected devices and the data limit"
+            },
+            {
+              "url": "https://dangkhoa116.github.io/hotspotpro/beta/screenshots/3-device-limit.jpg",
+              "accessibilityText": "A single device's usage, address and its own limit"
+            }
+          ]
+        },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "What it adds"
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "Personal Hotspot tells you almost nothing: no data total, no list of who is connected, no cap. HotspotPro adds all three, inside the stock Settings → Personal Hotspot pane.\n\n• **Data used this period**, with a monthly reset day you choose\n• **Who is connected** — name, address, and how much each device has used\n• **A limit** that warns you, and **per-device limits** that cut a device off"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "Privacy"
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "Everything stays on your device; nothing is uploaded. To attribute bytes to devices, a background helper reads packet **headers** on the tethering bridge — 14 bytes per frame, the Ethernet header, never packet contents. It stores client MAC addresses, the names devices announce over DHCP, and byte counts. Records are forgotten after 45 days, and switching *Track Hotspot Usage* off closes the tap entirely."
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionSubheaderView",
+          "title": "Compatibility"
+        },
+        {
+          "class": "DepictionTableTextView",
+          "title": "Supports",
+          "text": "iOS 14+, rootless and rootful"
+        },
+        {
+          "class": "DepictionTableTextView",
+          "title": "Architectures",
+          "text": "arm64 and arm64e"
+        },
+        {
+          "class": "DepictionTableTextView",
+          "title": "Tested on",
+          "text": "iOS 16.7.15, iPhone 8 Plus"
+        },
+        {
+          "class": "DepictionTableButtonView",
+          "title": "Source on GitHub",
+          "action": "https://github.com/dangkhoa116/hotspotpro",
+          "openExternal": true
+        }
+      ]
+    },
+    {
+      "tabname": "Changelog",
+      "class": "DepictionStackView",
+      "views": [
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.6.7**\n• Fixes a crash on some devices where Settings would not open and the phone resprang\n• Builds now come from Apple's own toolchain, and every release is checked before it goes out"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.6.6**\n• Split in two, so a bug in the Settings interface can no longer stop the phone booting\n• Wakes on network changes instead of polling, for less battery use\n• Hotspot status and the device list update much faster"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.5.5**\n• Per-device limits now offer round figures (100 MB, 250 MB, 500 MB) instead of 102 MB and 256 MB"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.5.4**\n• Much less background work with the hotspot off: the usage file is written only when something actually changed, sampling backs off, and the helper idles instead of waking every few seconds"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.5.3**\n• Will not install on iOS 18, where it is known to break the Settings app. Reports welcome from anyone who wants it supported there"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "**0.5.2**\n• Per-device data limits that cut a device off when it goes over\n• Device pages showing usage, address and status\n• Usage, connected devices and limits in the stock Personal Hotspot pane"
+        }
+      ]
+    }
+  ]
+}
