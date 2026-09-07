@@ -154,6 +154,12 @@ static void HPFlushCounters(void) {
         // it knows a tap was open at the moment this was written.
         if (gTapSince) payload[@"tapSince"] = gTapSince;
         payload[@"probing"] = @(gTapSince != nil && gCanProbe);
+        // The MACs a reject route is actually installed for right now, so the
+        // UI can tell "the tracker wants this blocked" from "the block is
+        // really in place". They diverge when this daemon is not running or
+        // cannot write routes on this firmware, which is exactly the case that
+        // showed "Blocked" over a device that still had working internet.
+        payload[@"installedBlocks"] = [gInstalledBlocks allKeys];
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:payload
                                                                   format:NSPropertyListXMLFormat_v1_0
                                                                  options:0

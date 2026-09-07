@@ -686,6 +686,34 @@ static NSArray *HPBuildBodySpecifiers(void) {
     return @([limits[[self hpMac]] doubleValue]);
 }
 
+/// The user-set nickname, or empty. The DHCP name a device announces is shown
+/// as a placeholder instead, so the field is not misread as already holding it.
+- (id)hpNameValue:(PSSpecifier *)spec {
+    NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
+    return ([nicknames isKindOfClass:[NSDictionary class]] ? nicknames[[self hpMac]] : nil) ?: @"";
+}
+
+- (void)setHpName:(id)value specifier:(PSSpecifier *)spec {
+    NSMutableDictionary *cfg =
+        [([NSDictionary dictionaryWithContentsOfFile:HPConfigPath()] ?: @{}) mutableCopy];
+    NSMutableDictionary *nicknames = [(cfg[HPCfgNicknamesKey] ?: @{}) mutableCopy];
+
+    NSString *name = [value isKindOfClass:[NSString class]] ? value : nil;
+    name = [name stringByTrimmingCharactersInSet:
+                     [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (name.length) nicknames[[self hpMac]] = name;
+    else [nicknames removeObjectForKey:[self hpMac]];   // cleared: back to the DHCP name
+
+    cfg[HPCfgNicknamesKey] = nicknames;
+    [cfg writeToFile:HPConfigPath() atomically:YES];
+
+    // The nickname is baked into device rows and the "seen this period" record
+    // by the collector, so a tick rebuilds them under the new name; do it now
+    // rather than waiting for the next sample.
+    self.title = name.length ? name : [self hpMac];
+    HPPostTickRequest();
+}
+
 - (void)setHpDeviceLimit:(id)value specifier:(PSSpecifier *)spec {
     NSMutableDictionary *cfg =
         [([NSDictionary dictionaryWithContentsOfFile:HPConfigPath()] ?: @{}) mutableCopy];
@@ -713,10 +741,23 @@ static NSArray *HPBuildBodySpecifiers(void) {
 }
 
 - (id)hpStatusValue:(PSSpecifier *)spec {
-    NSArray *blocked = HPStateLoad()[HPStBlockedMacsKey] ?: @[];
-    if ([blocked containsObject:[self hpMac]]) return @"Blocked — over its limit";
+    NSString *mac = [self hpMac];
+    BOOL wantBlocked = [(HPStateLoad()[HPStBlockedMacsKey] ?: @[]) containsObject:mac];
 
-    double limit = [HPConfig()[HPCfgDeviceLimitsKey][[self hpMac]] doubleValue];
+    if (wantBlocked) {
+        // "Blocked" is a claim about the routing table, and only the daemon
+        // touches that. Say it is blocked only when the daemon confirms the
+        // route is in and its heartbeat is recent; otherwise be honest that the
+        // device is over its limit but still has a working connection, which is
+        // what a dead or route-less daemon leaves behind.
+        BOOL enforced = [HPDaemonBlockedMacs() containsObject:mac];
+        NSDate *flush = HPDaemonLastFlush();
+        BOOL daemonAlive = flush && [[NSDate date] timeIntervalSinceDate:flush] <= 60.0;
+        if (enforced && daemonAlive) return @"Blocked — over its limit";
+        return @"Over limit — not enforced (helper not running)";
+    }
+
+    double limit = [HPConfig()[HPCfgDeviceLimitsKey][mac] doubleValue];
     return limit > 0 ? @"Allowed" : @"No limit set";
 }
 
@@ -734,6 +775,27 @@ static NSArray *HPBuildBodySpecifiers(void) {
     }
 
     NSMutableArray *specs = [NSMutableArray array];
+
+    [specs addObject:HPGroup(@"NAME", @"A name for this device in the list above. "
+                                       "Leave it blank to use the name the device "
+                                       "reports for itself.")];
+    PSSpecifier *name = [PSSpecifier preferenceSpecifierNamed:@"Name"
+                                                       target:self
+                                                          set:@selector(setHpName:specifier:)
+                                                          get:@selector(hpNameValue:)
+                                                       detail:nil
+                                                         cell:PSEditTextCell
+                                                         edit:nil];
+    // The DHCP name shown when nothing is set, so the field reads as a rename
+    // rather than an empty box.
+    NSDictionary *seenNow = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSString *dhcpName = seenNow[[self hpMac]][@"name"];
+    if (dhcpName.length && ![dhcpName isEqualToString:[self hpMac]]) {
+        [name setProperty:dhcpName forKey:@"placeholder"];
+    } else {
+        [name setProperty:@"Device name" forKey:@"placeholder"];
+    }
+    [specs addObject:name];
 
     [specs addObject:HPGroup(@"THIS PERIOD", nil)];
     PSSpecifier *used = [PSSpecifier preferenceSpecifierNamed:@"Used"
@@ -819,8 +881,11 @@ static NSArray *HPBuildBodySpecifiers(void) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     @try {
+        NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
+        NSString *nick = [nicknames isKindOfClass:[NSDictionary class]]
+                             ? nicknames[[self hpMac]] : nil;
         NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
-        self.title = seen[[self hpMac]][@"name"] ?: [self hpMac];
+        self.title = nick.length ? nick : (seen[[self hpMac]][@"name"] ?: [self hpMac]);
     } @catch (NSException *e) {}
 }
 
@@ -834,10 +899,20 @@ static NSArray *HPBuildDeviceRows(void) {
     NSMutableArray *specs = [NSMutableArray array];
     NSArray *devices = HPLiveConnectedDevices();
 
+    // A nickname the user set on a device's own page wins over the name the
+    // device announces over DHCP — which for a client with a randomised MAC is
+    // often missing entirely. The collector applies the same preference to the
+    // "seen this period" record, so a renamed device reads the same whether it
+    // is connected now (this list) or offline (the list below).
+    NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
+    if (![nicknames isKindOfClass:[NSDictionary class]]) nicknames = @{};
+
     for (NSDictionary *dev in devices) {
+        NSString *nick = nicknames[dev[HPDevMacKey]];
+        NSString *shown = nick.length ? nick : (dev[HPDevNameKey] ?: @"Device");
         // Built with a getter like every other value row, rather than a static
         // "value" property, which a PSTitleValueCell does not reliably display.
-        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:dev[HPDevNameKey] ?: @"Device"
+        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:shown
                                                           target:helper
                                                              set:NULL
                                                              get:@selector(deviceValue:)

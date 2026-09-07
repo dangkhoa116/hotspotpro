@@ -728,6 +728,13 @@ NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
 }
 
+NSArray<NSString *> *HPDaemonBlockedMacs(void) {
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
+                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSArray *macs = file[@"installedBlocks"];
+    return [macs isKindOfClass:[NSArray class]] ? macs : @[];
+}
+
 BOOL HPDaemonIsProbing(void) {
     NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
                               @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];

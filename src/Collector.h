@@ -136,6 +136,15 @@ NSDate *HPDaemonTapSince(void);
 /// be judged on a much shorter window when this is true.
 BOOL HPDaemonIsProbing(void);
 
+/// The client MACs the daemon has an active reject route installed for, as of
+/// its last flush. This is what is *actually* enforced, which is not the same
+/// as what the tracker decided should be blocked: they diverge when the daemon
+/// is not running or cannot write routes, and a caller that wants to tell a
+/// device the truth about its own status must check this, not only the
+/// tracker's blocklist. Pair it with HPDaemonLastFlush() to know how current
+/// it is. Empty when the daemon has never run.
+NSArray<NSString *> *HPDaemonBlockedMacs(void);
+
 /// When the daemon last wrote its counters — every 10s while its tap is open,
 /// whether or not any traffic arrived. This is the heartbeat that says "the
 /// silence of a given client means something", which per-client timestamps
