@@ -320,6 +320,25 @@ static void HPApplyBlocklist(void) {
         }
 
         HPSaveInstalledBlocks();
+
+        // Self-heal, at most once a minute: delete any reject route on a client
+        // address that is NOT currently meant to be blocked. The loop above
+        // only touches routes this process tracks; this also clears an orphan
+        // left by a killed daemon, so no route can strand a device for more
+        // than about a minute even while the daemon runs on without restarting.
+        // It never deletes a wanted block (those IPs are skipped), and if the
+        // list read ever came back short it errs toward giving a device its
+        // connection back rather than cutting one off — the safe direction.
+        static NSDate *lastHeal;
+        NSDate *now = [NSDate date];
+        if (!lastHeal || [now timeIntervalSinceDate:lastHeal] >= 60.0) {
+            lastHeal = now;
+            NSSet *keep = [NSSet setWithArray:[desired allValues]];
+            for (int host = 2; host <= 14; host++) {
+                NSString *ip = [NSString stringWithFormat:@"172.20.10.%d", host];
+                if (![keep containsObject:ip]) HPSetRouteBlock(ip, NO);
+            }
+        }
     } @catch (NSException *e) {
         HPDaemonLog(@"blocklist apply failed: %@", e);
     }
