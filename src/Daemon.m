@@ -24,7 +24,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
-#include <ifaddrs.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
@@ -37,7 +36,6 @@
 #define HP_BIOCGDLT      _IOR ('B', 106, u_int)
 #define HP_BIOCSETIF     _IOW ('B', 108, struct ifreq)
 #define HP_BIOCIMMEDIATE _IOW ('B', 112, u_int)
-#define HP_BIOCSHDRCMPLT _IOW ('B', 117, u_int)
 #define HP_BIOCSSEESENT  _IOW ('B', 118, u_int)
 
 #define HP_DLT_EN10MB 1
@@ -83,7 +81,6 @@ static NSDate *gTapSince;
 // Whether the tap could be opened for writing, and so whether the presence
 // probes below are actually going out. Published, because a reader that assumed
 // probing while it was not happening would rule live devices absent.
-static BOOL gCanProbe;
 static NSString *gDevicesPath = @"/var/mobile/Library/Caches/hotspotpro-devices.plist";
 
 // A one-line breadcrumb saying what this process is doing, so the UI and CLI
@@ -188,7 +185,6 @@ static void HPFlushCounters(void) {
         // Absent rather than null while there is no tap, so a reader that finds
         // it knows a tap was open at the moment this was written.
         if (gTapSince) payload[@"tapSince"] = gTapSince;
-        payload[@"probing"] = @(gTapSince != nil && gCanProbe);
         // The MACs a reject route is actually installed for right now, so the
         // UI can tell "the tracker wants this blocked" from "the block is
         // really in place". They diverge when this daemon is not running or
@@ -359,28 +355,14 @@ static NSDictionary *HPFindBridge(void) {
 
 /// Open a free /dev/bpfN bound to `ifname`. Returns -1 on failure.
 static int HPOpenBPF(NSString *ifname) {
-    // Read/write, because the tap is also what the presence probes go out
-    // through: writing a frame to a BPF device puts it on the interface, which
-    // saves opening a second socket to reach clients that are already on the
-    // other side of this very bridge. A node that will only open read-only
-    // still counts bytes perfectly well; it just cannot ask anyone anything.
+    // Read-only: this tap only ever reads frames to count them. It does not
+    // write anything to the interface.
     int fd = -1;
-    gCanProbe = NO;
     for (int i = 0; i < 32; i++) {
         char path[32];
         snprintf(path, sizeof(path), "/dev/bpf%d", i);
-        fd = open(path, O_RDWR);
-        if (fd >= 0) {
-            gCanProbe = YES;
-            break;
-        }
-        if (errno == EBUSY) continue;   // in use by something else; try the next
         fd = open(path, O_RDONLY);
-        if (fd >= 0) {
-            HPDaemonLog(@"%s opened read-only (%s) — presence probes disabled",
-                        path, strerror(errno));
-            break;
-        }
+        if (fd >= 0) break;
         if (errno != EBUSY && errno != EPERM && errno != EACCES) {
             // ENOENT means we ran past the last node; anything else is worth a look.
             if (errno != ENOENT) HPDaemonLog(@"open %s: %s", path, strerror(errno));
@@ -416,13 +398,6 @@ static int HPOpenBPF(NSString *ifname) {
     u_int on = 1;
     ioctl(fd, HP_BIOCSSEESENT, &on);
 
-    // Probes are written with their Ethernet header already filled in, so the
-    // kernel must be told not to supply a source address of its own.
-    if (gCanProbe && ioctl(fd, HP_BIOCSHDRCMPLT, &on) < 0) {
-        HPDaemonLog(@"BIOCSHDRCMPLT: %s — presence probes disabled", strerror(errno));
-        gCanProbe = NO;
-    }
-
     // Capture just the Ethernet header: this is what keeps the tap cheap, while
     // bh_datalen still reports each frame's true length.
     static struct hp_bpf_insn insns[] = {
@@ -441,132 +416,6 @@ static int HPOpenBPF(NSString *ifname) {
 
     HPDaemonLog(@"tapping %@ (fd %d, buffer %u bytes)", ifname, fd, blen);
     return fd;
-}
-
-#pragma mark - Presence probes
-
-// How often each client is asked whether it is still there. Every probe is one
-// 42-byte frame, and a client that is present answers within milliseconds.
-static const NSTimeInterval kProbeInterval = 10.0;
-
-/// An ARP request, laid out as it goes on the wire.
-struct hp_arp_probe {
-    unsigned char dstMac[6];
-    unsigned char srcMac[6];
-    unsigned char etherType[2];   // 0x0806
-    unsigned char hwType[2];      // 0x0001, Ethernet
-    unsigned char protoType[2];   // 0x0800, IPv4
-    unsigned char hwLen;          // 6
-    unsigned char protoLen;       // 4
-    unsigned char op[2];          // 0x0001, request
-    unsigned char senderMac[6];
-    unsigned char senderIp[4];
-    unsigned char targetMac[6];
-    unsigned char targetIp[4];
-} __attribute__((packed));
-
-_Static_assert(sizeof(struct hp_arp_probe) == 42, "ARP request is 42 bytes on Ethernet");
-
-/// The bridge's own IPv4 address, which every probe claims to come from.
-///
-/// getifaddrs() rather than a sysctl walk: this wants an address, not a
-/// counter, and it is the 32-bit byte counters that made getifaddrs unusable
-/// elsewhere. Zero when the bridge has no address yet, which means no probe can
-/// be sent — a request from 0.0.0.0 is an address-probe with different
-/// semantics, and clients are entitled to ignore it.
-static uint32_t HPBridgeAddress(NSString *ifname) {
-    struct ifaddrs *list = NULL;
-    if (getifaddrs(&list) != 0) return 0;
-    uint32_t addr = 0;
-    for (struct ifaddrs *a = list; a; a = a->ifa_next) {
-        if (!a->ifa_addr || a->ifa_addr->sa_family != AF_INET) continue;
-        if (!a->ifa_name || ![ifname isEqualToString:@(a->ifa_name)]) continue;
-        addr = ((struct sockaddr_in *)a->ifa_addr)->sin_addr.s_addr;
-        break;
-    }
-    freeifaddrs(list);
-    return addr;
-}
-
-/// Parse "1e:07:67:bb:5b:3f" into six bytes. NO unless it is exactly that.
-static BOOL HPParseMac(NSString *mac, unsigned char out[6]) {
-    NSArray<NSString *> *parts = [mac componentsSeparatedByString:@":"];
-    if (parts.count != 6) return NO;
-    for (int i = 0; i < 6; i++) {
-        unsigned int byte = 0;
-        NSScanner *sc = [NSScanner scannerWithString:parts[i]];
-        if (![sc scanHexInt:&byte] || !sc.isAtEnd || byte > 0xff) return NO;
-        out[i] = (unsigned char)byte;
-    }
-    return YES;
-}
-
-/// Ask every client whether it is still there.
-///
-/// The ARP table cannot answer that: it only ever records that a client *was*
-/// here, and a departed entry sits there counting down for the rest of its
-/// lifetime. Waiting to overhear a client instead cannot answer it either,
-/// because a device that is connected and idle is entitled to say nothing for
-/// minutes on end — which is exactly what made connected devices get reported
-/// as offline. A request has an answer: a client that is still associated
-/// replies in milliseconds, the tap sees the reply, and its timestamp moves.
-/// Silence after several unanswered requests is then worth something.
-///
-/// One unicast request per client, which is what neighbour-unreachability
-/// detection does everywhere else; nothing is broadcast and nothing else on the
-/// network is disturbed.
-static void HPProbeClients(int fd, NSString *bridgeName, NSString *bridgeMac) {
-    if (!gCanProbe || fd < 0) return;
-
-    unsigned char srcMac[6];
-    if (!HPParseMac(bridgeMac ?: @"", srcMac)) return;
-    uint32_t senderIp = HPBridgeAddress(bridgeName);
-    if (senderIp == 0) return;
-
-    NSArray<NSString *> *names = HPHotspotInterfaceNames(HPCopyInterfaces());
-    NSArray<NSDictionary *> *clients = HPCopyConnectedDevices(names);
-    static BOOL warned = NO;
-
-    for (NSDictionary *client in clients) {
-        // No need to ask a client that has already spoken since the last flush:
-        // it has answered the question by talking. Probes therefore go only to
-        // the devices whose presence is actually in doubt, which on a busy
-        // hotspot is none of them.
-        if ([gTouchedMacs containsObject:client[HPDevMacKey] ?: @""]) continue;
-
-        unsigned char dstMac[6];
-        if (!HPParseMac(client[HPDevMacKey] ?: @"", dstMac)) continue;
-        struct in_addr target;
-        if (inet_pton(AF_INET, [(client[HPDevIPKey] ?: @"") UTF8String], &target) != 1) continue;
-
-        struct hp_arp_probe p;
-        memset(&p, 0, sizeof(p));
-        memcpy(p.dstMac, dstMac, 6);
-        memcpy(p.srcMac, srcMac, 6);
-        p.etherType[0] = 0x08; p.etherType[1] = 0x06;
-        p.hwType[1]    = 0x01;
-        p.protoType[0] = 0x08;
-        p.hwLen        = 6;
-        p.protoLen     = 4;
-        p.op[1]        = 0x01;
-        memcpy(p.senderMac, srcMac, 6);
-        memcpy(p.senderIp, &senderIp, 4);
-        memcpy(p.targetMac, dstMac, 6);
-        memcpy(p.targetIp, &target.s_addr, 4);
-
-        if (write(fd, &p, sizeof(p)) < 0) {
-            // One report, then stop: if the kernel will not take a frame from
-            // us it will not take the next one either, and the passive rule is
-            // a working fallback. Readers are told, so they widen their window.
-            if (!warned) {
-                HPDaemonLog(@"probe write: %s — falling back to passive presence",
-                            strerror(errno));
-                warned = YES;
-            }
-            gCanProbe = NO;
-            return;
-        }
-    }
 }
 
 static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
@@ -677,7 +526,6 @@ int main(int argc, char *argv[]) {
         NSString *bridgeName = nil;
         NSString *bridgeMac = nil;
         NSDate *lastFlush = [NSDate date];
-        NSDate *lastProbe = [NSDate distantPast];
 
         while (1) {
             @autoreleasepool {
@@ -731,11 +579,7 @@ int main(int argc, char *argv[]) {
                         continue;
                     }
                     gTapSince = [NSDate date];
-                    HPWriteDaemonStatus(gCanProbe ? @"running" : @"running-noprobe");
-                    // Ask straight away rather than waiting out the first
-                    // interval: a client that attached before the tap opened
-                    // has no timestamp at all until something is heard from it.
-                    lastProbe = [NSDate distantPast];
+                    HPWriteDaemonStatus(@"running");
                 }
 
                 if (fd < 0) {
@@ -796,13 +640,6 @@ int main(int argc, char *argv[]) {
                         gTapSince = nil;
                         HPFlushCounters();
                     }
-                }
-
-                // Probe before flushing, so a reply that arrives in the same
-                // breath is stamped by this flush rather than the next one.
-                if ([[NSDate date] timeIntervalSinceDate:lastProbe] >= kProbeInterval) {
-                    HPProbeClients(fd, bridgeName, bridgeMac);
-                    lastProbe = [NSDate date];
                 }
 
                 if ([[NSDate date] timeIntervalSinceDate:lastFlush] >= kFlushInterval) {
