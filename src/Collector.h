@@ -130,6 +130,12 @@ NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void);
 /// afterwards through no fault of the clients.
 NSDate *HPDaemonTapSince(void);
 
+/// Whether the daemon is actively probing its clients — sending each one a
+/// unicast ARP request every 10s — rather than only listening. It answers a
+/// question the network cannot be relied on to answer unasked, so presence can
+/// be judged on a much shorter window when this is true.
+BOOL HPDaemonIsProbing(void);
+
 /// When the daemon last wrote its counters — every 10s while its tap is open,
 /// whether or not any traffic arrived. This is the heartbeat that says "the
 /// silence of a given client means something", which per-client timestamps
@@ -205,9 +211,14 @@ NSArray<NSDictionary *> *HPCopyConnectedDevices(NSArray<NSString *> *hotspotIfNa
 ///
 /// A device stays on the list unless three independent signals all say nothing
 /// has been heard from it — the root daemon's packet tap, the kernel's ARP
-/// expiry, and the DHCP lease end — for several minutes running, and even then
-/// only once the tap has demonstrably been listening for that whole span. An
-/// idle client is silent for minutes at a time, so anything less flickers.
+/// expiry, and the DHCP lease end — for the whole window running, and even then
+/// only once the tap has demonstrably been listening for that span.
+///
+/// The window is 45s while the daemon is probing, because then silence is
+/// silence in the face of four unanswered ARP requests. With no probes going
+/// out it widens to four minutes: an idle client is entitled to say nothing for
+/// minutes at a time, and anything shorter reports connected devices as
+/// offline and back again.
 ///
 /// Keeps a little per-process state, so successive calls are what makes it
 /// work; calls within the same second share one answer, which is what keeps
@@ -216,7 +227,8 @@ NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfName
 
 // The thresholds the rule above turns on, exposed so a test can express itself
 // in terms of them rather than restating the numbers.
-extern const NSTimeInterval HPSilentCutoff;      // unheard this long -> gone
+extern const NSTimeInterval HPSilentCutoff;       // unheard this long -> gone
+extern const NSTimeInterval HPSilentCutoffProbed;// ...and this long, while probing
 extern const NSTimeInterval HPDaemonStaleAfter;  // heartbeat older than this means nothing
 extern const int HPMissesNeeded;                 // consecutive silent polls before dropping
 
@@ -230,6 +242,7 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
                                                 NSDictionary<NSString *, NSDate *> *lastSeen,
                                                 NSDate *tapSince,
                                                 NSDate *lastFlush,
+                                                BOOL probing,
                                                 NSMutableDictionary *books,
                                                 NSDate *now);
 

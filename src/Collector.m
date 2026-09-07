@@ -535,7 +535,8 @@ NSArray<NSDictionary *> *HPCopyConnectedDevices(NSArray<NSString *> *hotspotIfNa
 #pragma mark - Presence
 
 // How long a client may go completely unheard — no captured frame, no ARP
-// refresh, no lease renewal — before it is treated as gone.
+// refresh, no lease renewal — before it is treated as gone, when nobody is
+// asking it anything.
 //
 // Minutes rather than seconds, because an idle client really is silent for
 // minutes. Nothing obliges an associated device sitting in a pocket with its
@@ -548,6 +549,14 @@ NSArray<NSDictionary *> *HPCopyConnectedDevices(NSArray<NSString *> *hotspotIfNa
 // really has left lingers for a few minutes; showing a present device as
 // offline is the worse of the two errors.
 const NSTimeInterval HPSilentCutoff = 240.0;
+
+// The same question, when the daemon is probing: it sends each client a unicast
+// ARP request every 10s and a client that is still associated answers in
+// milliseconds. Silence then means silence in the face of four unanswered
+// questions, not merely a device with nothing to say — which is both quicker
+// and more certain than the passive window above. Used only while the daemon
+// reports that its probes are actually going out.
+const NSTimeInterval HPSilentCutoffProbed = 45.0;
 
 // How stale the daemon's own heartbeat may be before its silence stops meaning
 // anything. It flushes every 10s while its tap is open, whether or not any
@@ -583,8 +592,10 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
                                                 NSDictionary<NSString *, NSDate *> *lastSeen,
                                                 NSDate *tapSince,
                                                 NSDate *lastFlush,
+                                                BOOL probing,
                                                 NSMutableDictionary *books,
                                                 NSDate *now) {
+    const NSTimeInterval cutoff = probing ? HPSilentCutoffProbed : HPSilentCutoff;
     NSMutableDictionary *lastExpire = HPBook(books, kHPBookExpire);
     NSMutableDictionary *lastLease  = HPBook(books, kHPBookLease);
     NSMutableDictionary *lastProof  = HPBook(books, kHPBookProof);
@@ -600,7 +611,7 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
     // departure may be inferred until the tap has been open for the whole
     // window it is being asked to interpret.
     BOOL canProveDeparture = beating && lastSeen.count > 0 && tapSince &&
-        [now timeIntervalSinceDate:tapSince] >= HPSilentCutoff;
+        [now timeIntervalSinceDate:tapSince] >= cutoff;
 
     NSMutableArray *present = [NSMutableArray array];
     NSMutableSet<NSString *> *live = [NSMutableSet set];
@@ -613,7 +624,7 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
         // of this client within the window. It sees sent frames too, so a
         // client that only receives still counts.
         NSDate *seen = lastSeen[mac];
-        BOOL heard = seen && [now timeIntervalSinceDate:seen] <= HPSilentCutoff;
+        BOOL heard = seen && [now timeIntervalSinceDate:seen] <= cutoff;
 
         // Evidence 2: the kernel pushed this ARP entry's expiry further out,
         // which it only does having heard from the neighbour. Compared against
@@ -657,9 +668,8 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
         int m = [misses[mac] intValue] + 1;
         misses[mac] = @(m);
         NSDate *proof = lastProof[mac];
-        NSTimeInterval quiet = proof ? [now timeIntervalSinceDate:proof]
-                                     : HPSilentCutoff;
-        if (m >= HPMissesNeeded && quiet >= HPSilentCutoff) continue;
+        NSTimeInterval quiet = proof ? [now timeIntervalSinceDate:proof] : cutoff;
+        if (m >= HPMissesNeeded && quiet >= cutoff) continue;
         [present addObject:dev];
     }
 
@@ -699,6 +709,7 @@ NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfName
                                    HPCopyDaemonLastSeen(),
                                    HPDaemonTapSince(),
                                    HPDaemonLastFlush(),
+                                   HPDaemonIsProbing(),
                                    books,
                                    now);
         cached    = [present copy];
@@ -715,6 +726,12 @@ NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
                               @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
     NSDictionary *bytes = file[@"bytesByMac"];
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
+}
+
+BOOL HPDaemonIsProbing(void) {
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
+                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    return [file[@"probing"] boolValue];
 }
 
 NSDate *HPDaemonTapSince(void) {
