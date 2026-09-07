@@ -1,0 +1,91 @@
+name: Publish release
+
+# Publishes a stable release from a build's debs: regenerates the top-level APT
+# repo under docs/, commits it, and pushes the v<version> tag — which fires
+# release.yml to create the GitHub release from docs/debs/.
+#
+# Separate from publish-beta.yml, which only ever writes docs/beta/. This one
+# writes the stable docs/ that every current user polls, so it is only ever run
+# by hand, against a build that has already been checked green:
+#
+#   Actions -> Publish release -> Run workflow
+#     run_id:  the green build.yml run whose debs to release
+#     version: e.g. 0.6.8 — must match control and the depiction changelog
+#
+# Like the beta publisher it does not compile: the arm64e debs already exist as
+# that run's artifact, and this repackages those exact bytes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'build.yml run id whose debs to release'
+        required: true
+      version:
+        description: 'version to release, e.g. 0.6.8 (must match control)'
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Download the release debs
+        uses: actions/download-artifact@v4
+        with:
+          name: debs
+          path: release
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Guard — debs, control and version all agree
+        run: |
+          set -e
+          ls release/*.deb >/dev/null 2>&1 || { echo "::error::no debs in artifact"; exit 1; }
+          WANT="${{ inputs.version }}"
+          CTRL="$(grep '^Version:' control | cut -d' ' -f2)"
+          [ "$CTRL" = "$WANT" ] || { echo "::error::control is $CTRL, not $WANT"; exit 1; }
+          for d in release/*.deb; do
+            DV="$(dpkg-deb -f "$d" Version)"
+            [ "$DV" = "$WANT" ] || { echo "::error::$d is $DV, not $WANT"; exit 1; }
+          done
+          case "$WANT" in *"~"*|*beta*|*rc*)
+            echo "::error::$WANT looks like a pre-release; use publish-beta.yml"; exit 1;; esac
+
+      - name: Regenerate docs/ (packages served from the GitHub release)
+        env:
+          GITHUB_URL: https://github.com/dangkhoa116/hotspotpro
+          HP_RELEASE_TAG: v${{ inputs.version }}
+        run: bash tools/repo-build.sh https://dangkhoa116.github.io/hotspotpro
+
+      - name: Commit docs/ and push the tag
+        run: |
+          set -e
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs
+          if git diff --cached --quiet; then
+            echo "docs/ already up to date"
+          else
+            git commit -m "Release ${{ inputs.version }}: regenerate the repo"
+            git push origin HEAD:master
+          fi
+          # The tag is what release.yml watches; it attaches docs/debs/*.deb to
+          # the GitHub release and writes notes from README's changelog.
+          TAG="v${{ inputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists — not moving it"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+          echo "released $TAG"
