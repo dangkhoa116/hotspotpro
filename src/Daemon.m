@@ -95,6 +95,11 @@ static NSString *gDevicesPath = @"/var/mobile/Library/Caches/hotspotpro-devices.
 // the device refused to exec).
 static NSString *gStatusPath = @"/var/mobile/Library/Caches/hotspotpro-daemon.plist";
 
+// MAC -> IP for every block this daemon has installed. Declared here, up with
+// the other state, because the flush publishes its keys — it is read well
+// before the blocking section that maintains it is reached in the file.
+static NSMutableDictionary<NSString *, NSString *> *gInstalledBlocks;
+
 // A client with a randomised MAC mints a new entry every time it reconnects, so
 // without a bound this file would grow for the life of the install.
 static const NSTimeInterval kMaxDeviceAge = 60 * 60 * 24 * 45;   // 45 days
@@ -211,8 +216,6 @@ static void HPFlushCounters(void) {
 
 #pragma mark - Blocking
 
-// MAC -> IP for every block this daemon has installed.
-static NSMutableDictionary<NSString *, NSString *> *gInstalledBlocks;
 static NSString *gInstalledPath = @"/var/mobile/Library/Caches/hotspotpro-installed.plist";
 
 /// Install or remove a reject route for one hotspot client.
