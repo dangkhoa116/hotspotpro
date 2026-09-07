@@ -75,6 +75,12 @@ docs/      the generated APT repo, served by GitHub Pages
 
 ## Changelog
 
+**0.6.9**
+- Now installs and runs on iOS 18. The crash that made earlier builds unsafe
+  there was the arm64e linker marker fixed in 0.6.7, so the install block is
+  lifted. Still only tested through iOS 17 — reports from iOS 18 welcome.
+- The **Buy Me a Beer 🍺** tip row is back and always shown, linking to Ko-fi.
+
 **0.6.8**
 - Connected devices no longer flip between online and offline, or show
   "no devices" while a device is actually connected — presence is judged over a
