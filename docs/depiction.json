@@ -78,6 +78,11 @@
       "views": [
         {
           "class": "DepictionMarkdownView",
+          "markdown": "**0.6.8**\n• Connected devices no longer flip between online and offline, or show \"no devices\" while actually connected\n• Rename a device — the new name shows right away\n• Per-device limits: a block can never get stuck, so a device is never left without internet after you lift its limit or turn tracking off\n• A device over its limit but not actually cut off now says so plainly"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
           "markdown": "**0.6.7**\n• Fixes a crash on some devices where Settings would not open and the phone resprang\n• Builds now come from Apple's own toolchain, and every release is checked before it goes out"
         },
         { "class": "DepictionSeparatorView" },
