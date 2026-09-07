@@ -194,27 +194,11 @@ static void HPStartCollector(void) {
 
 #pragma mark - Entry
 
-// iOS 18 is untested and reported broken: users on 18.3.1 and 18.4.1 got
-// resprings, safe mode, and a Settings app that refused to open. Working
-// reports exist for 15.4.1, 16.5, 16.7 and 17.0.2.
-//
-// The package also refuses to install on 18 (see the firmware dependency in
-// control); this gate is the second line, for anyone who force-installs or
-// upgrades across the boundary.
-static BOOL HPFirmwareUntested(void) {
-    NSOperatingSystemVersion ios18 = { 18, 0, 0 };
-    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:ios18];
-}
-
 %ctor {
     @autoreleasepool {
         @try {
             // The filter plist already limits this dylib to SpringBoard, so the
             // bundle check is belt and braces rather than dispatch.
-            if (HPFirmwareUntested()) {
-                HPLog(@"iOS 18+ — collector disabled, firmware untested");
-                return;
-            }
             HPStartCollector();
         } @catch (NSException *e) {
             HPLog(@"ctor failed: %@", e);

@@ -510,15 +510,6 @@ int main(int argc, char *argv[]) {
         gInstalledBlocks = [NSMutableDictionary dictionary];
         HPDaemonLog(@"started, uid %d", getuid());
 
-        // Same gate as the tweak: iOS 18 is untested and reported unstable, and
-        // this process is root, taps packets and writes routes. Exit rather than
-        // run any of that against kernel structures nobody here has checked.
-        NSOperatingSystemVersion ios18 = { 18, 0, 0 };
-        if ([[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:ios18]) {
-            HPDaemonLog(@"iOS 18+ — untested firmware, exiting without tapping");
-            HPWriteDaemonStatus(@"gated-ios18");
-            return 0;
-        }
         HPWriteDaemonStatus(@"starting");
 
         HPClearStaleBlocks();

@@ -22,15 +22,14 @@
 /// hotspot clients at a handful, but the historical list is unbounded.
 static const NSUInteger kHPMaxOfflineRows = 6;
 
-/// Tip jar. The link comes from `donate-url.txt`, which the build scripts turn
-/// into DonateURL.h, so changing it never means editing code. While it is empty
-/// the row is not shown at all — an unconfigured build never presents a button
-/// that goes nowhere.
+/// Tip jar. `donate-url.txt` → DonateURL.h (via the build scripts) overrides the
+/// link without editing code; with no override it falls back to the maintainer's
+/// public Ko-fi, so the row is always present.
 #if __has_include("DonateURL.h")
 #import "DonateURL.h"
 #endif
 #ifndef HP_DONATE_URL
-#define HP_DONATE_URL ""
+#define HP_DONATE_URL "https://ko-fi.com/dangkhoa116"
 #endif
 static NSString *const kHPDonateURL = @HP_DONATE_URL;
 
@@ -1377,21 +1376,9 @@ static void HPReloadValues(PSListController *pane) {
 
 #pragma mark - Entry
 
-// See SpringBoard.x for why iOS 18 is gated. Duplicated rather than shared
-// because the two dylibs no longer have a translation unit in common, and a
-// four-line check is cheaper than a header to hold it.
-static BOOL HPFirmwareUntested(void) {
-    NSOperatingSystemVersion ios18 = { 18, 0, 0 };
-    return [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:ios18];
-}
-
 %ctor {
     @autoreleasepool {
         @try {
-            if (HPFirmwareUntested()) {
-                HPLog(@"iOS 18+ — settings hooks disabled, firmware untested");
-                return;
-            }
             %init(SettingsHooks);
             HPLog(@"settings hooks installed");
         } @catch (NSException *e) {
