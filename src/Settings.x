@@ -902,8 +902,10 @@ static NSArray *HPBuildDeviceRows(void) {
 
     for (NSString *mac in offline) {
         NSDictionary *record = seen[mac];
+        NSString *nick = nicknames[mac];
+        NSString *shown = nick.length ? nick : (record[@"name"] ?: mac);
 
-        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:record[@"name"] ?: mac
+        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:shown
                                                           target:helper
                                                              set:NULL
                                                              get:@selector(deviceValue:)
@@ -937,6 +939,7 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
     NSString *_hpStructure;
     NSString *_hpValues;
     BOOL _hpEnabled;
+    BOOL _hpAppearedOnce;
 }
 
 - (NSArray *)specifiers {
@@ -975,6 +978,17 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
     [super viewWillAppear:animated];
     @try {
         HPSettingsHelper *helper = [HPSettingsHelper shared];
+
+        // Coming BACK to this pane — e.g. after renaming a device on its own
+        // page — the rows on screen were built before the change. Rebuild them
+        // now so the new name shows at once. Skipped on the very first
+        // appearance, where -specifiers has just built them fresh and the table
+        // is not up yet. Without this, re-baselining the signature just below
+        // made hpTick compare equal-to-equal and never repaint, so a rename
+        // never showed in the list.
+        if (_hpAppearedOnce) [self hpUpdateDeviceRows];
+        _hpAppearedOnce = YES;
+
         _hpStructure = [helper structureSignature];
         _hpValues = [helper valueSignature];
         _hpEnabled = [HPConfig()[HPCfgEnabledKey] boolValue];
