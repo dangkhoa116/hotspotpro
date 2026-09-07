@@ -20,73 +20,47 @@ Free, and the source is here. Reboot or respring after installing.
 
 ## How it works
 
-Three pieces, deliberately kept apart:
+Four pieces, deliberately kept apart:
 
 | Piece | Runs as | Job |
 |---|---|---|
-| `HotspotPro.dylib` in SpringBoard | mobile | Samples counters every 10s, keeps the running total, posts warnings |
+| `HotspotPro.dylib` in SpringBoard | mobile | Samples counters, keeps the running total, posts warnings |
 | `HotspotPro.dylib` in Preferences | mobile | The UI, appended to the stock Personal Hotspot pane |
-| `hotspotprod` (LaunchDaemon) | root | Per-device byte counting, and enforcing per-device limits |
-| `hotspotpro` (CLI) | mobile | `dump`, `status`, `watch`, `selftest` — the same collector code, runnable by hand |
+| `hotspotprod` (LaunchDaemon) | root | Per-device byte counting and per-device blocking |
+| `hotspotpro` (CLI) | mobile | `dump`, `status`, `watch`, `selftest` — the shared collector, by hand |
 
-**Only the SpringBoard collector ever writes the usage totals.** The UI writes
-requests and the daemon writes per-device counters; one writer for the totals
-means a reset can never race a sample.
-
-### Where the numbers come from
-
-- **Totals** — `sysctl NET_RT_IFLIST2`, which reports 64-bit byte counters.
-  Not `getifaddrs()`, whose counters are 32-bit and wrap at 4 GB.
-- **Which interface** — `ap1`, the Wi-Fi AP interface, plus `en2` for USB
-  tethering. Measured on-device: `bridge100` counts every forwarded packet
-  *twice*, so counting the bridge would double your usage.
-- **Device names** — `/var/db/dhcpd_leases`, the hotspot's own DHCP records.
-- **Who is connected** — the ARP table, filtered to the hotspot subnet, minus
-  the clients that have left. ARP only ever records that a device *was* here, so
-  a departure is inferred only when three independent signals go quiet together
-  — the daemon's packet tap, the kernel's ARP expiry, and the DHCP lease end —
-  for a full four-minute window, and even then only once the tap has been
-  listening that whole span. A connected device with its screen off is entitled
-  to say nothing for minutes, so a shorter window reported those as offline and
-  back again; the wide window is what stops the flicker.
-- **Per-device bytes** — a BPF tap on the tethering bridge with a 14-byte snap
-  length, so the kernel copies only each frame's Ethernet header while the
-  frame's true length is still counted. Reads are batched; with the hotspot off
-  the daemon polls the interface list every 5s and does nothing else.
-- **Per-device blocking** — a host reject route for that client. Not pf: there
-  is no `pfctl` on iOS to verify hand-built `pf_rule` ioctls against, whereas
-  the routing socket needs only the message header the ARP reader already
-  proves correct. The daemon refuses any address outside the hotspot's subnet.
+Only the SpringBoard collector writes the usage totals, so a reset can never
+race a sample. Totals come from `sysctl NET_RT_IFLIST2` (64-bit byte counters);
+device names from the hotspot's own DHCP leases; the connected list from the ARP
+table, with a departure judged over a steady four-minute window so a quiet
+device doesn't flicker offline. Per-device bytes come from a BPF tap that copies
+only each frame's 14-byte Ethernet header, and blocking is a host reject route
+for that client — never outside the hotspot's own subnet.
 
 ## Privacy
 
-Everything stays on the device. Nothing is uploaded anywhere.
-
-The daemon reads packet **headers** on the tethering bridge to attribute bytes
-to devices — it captures 14 bytes per frame, which is the Ethernet header, and
-never packet contents. It stores client MAC addresses, the names those devices
-announce over DHCP, and byte counts, in
-`/var/mobile/Library/Caches/hotspotpro-*.plist`. Device records are forgotten
+Everything stays on the device; nothing is uploaded. The tap reads packet
+**headers** only — 14 bytes per frame, never contents — and stores client MAC
+addresses, the names devices announce over DHCP, and byte counts, all forgotten
 after 45 days. Switching **Track Hotspot Usage** off closes the tap entirely.
 
 ## Compatibility
 
 - **Tested on** iOS 16.7.15, iPhone 8 Plus, Dopamine (rootless), ElleKit.
 - **Built for** iOS 14+, rootless and rootful, `arm64` and `arm64e`.
-- Untested outside the configuration above. Reports welcome.
+- Untested outside the above. Reports welcome.
 
 ## Building
 
-Requires [Theos](https://theos.dev). To build both release packages:
+Requires [Theos](https://theos.dev).
 
 ```sh
-tools/build-release.sh      # rootless + rootful, both architectures, into release/
+tools/build-release.sh   # both packages, both architectures, into release/
+tools/build.sh           # a single development build
 ```
 
-For a single development build, `tools/build.sh`. `tools/repo-publish.sh`
-regenerates a local APT repo for testing over the LAN, and `tools/check-fat.sh`
-confirms the built binaries really carry both architectures — a tweak that
-ships arm64 only links fine and then fails silently on every A12+ device.
+`tools/check-fat.sh` confirms the binaries carry both architectures — an arm64-only
+tweak links fine and then fails silently on every A12+ device.
 
 ### Layout
 
@@ -98,11 +72,6 @@ layout/    files installed onto the device (DEBIAN scripts, LaunchDaemon)
 web/       templates for the repo landing page and depictions
 docs/      the generated APT repo, served by GitHub Pages
 ```
-
-The `Makefile` names sources bare even though they live in `src/`: the build
-scripts copy them flat into a Linux-native directory, because Theos on a WSL1
-`/mnt/c` path hits permission and symlink problems. Adding `src/` prefixes to
-the Makefile would break the build.
 
 ## Changelog
 
