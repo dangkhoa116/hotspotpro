@@ -114,7 +114,16 @@ NSDictionary *HPTick(void) {
     state[HPStIfNamesKey]    = names;
 
     // --- devices -----------------------------------------------------------
+    // Two lists, deliberately: the ARP table is what a device has *been* seen
+    // at, and that is what the "seen this period" record wants — a name and an
+    // address are worth keeping the moment they are known. "Connected now" is a
+    // narrower question, and only HPCopyPresentDevices() answers it, so the CLI
+    // and the Settings pane cannot end up disagreeing about who is here.
     NSArray<NSDictionary *> *devices = HPCopyConnectedDevices(names);
+    NSMutableSet<NSString *> *presentMacs = [NSMutableSet set];
+    for (NSDictionary *dev in HPCopyPresentDevices(names)) {
+        if (dev[HPDevMacKey]) [presentMacs addObject:dev[HPDevMacKey]];
+    }
     NSDictionary *nicknames = cfg[HPCfgNicknamesKey];
 
     NSMutableArray *devicesNow = [NSMutableArray array];
@@ -129,7 +138,7 @@ NSDictionary *HPTick(void) {
         NSString *nick = [nicknames isKindOfClass:[NSDictionary class]] ? nicknames[mac] : nil;
         if (nick.length) entry[HPDevNameKey] = nick;
         if (!entry[HPDevNameKey]) entry[HPDevNameKey] = mac;
-        [devicesNow addObject:entry];
+        if ([presentMacs containsObject:mac]) [devicesNow addObject:entry];
 
         NSMutableDictionary *record = [(seen[mac] ?: @{}) mutableCopy];
         if (!record[@"first"]) record[@"first"] = now;

@@ -36,7 +36,6 @@
 #define HP_BIOCGDLT      _IOR ('B', 106, u_int)
 #define HP_BIOCSETIF     _IOW ('B', 108, struct ifreq)
 #define HP_BIOCIMMEDIATE _IOW ('B', 112, u_int)
-#define HP_BIOCSHDRCMPLT _IOW ('B', 117, u_int)
 #define HP_BIOCSSEESENT  _IOW ('B', 118, u_int)
 
 #define HP_DLT_EN10MB 1
@@ -74,7 +73,26 @@ static const NSTimeInterval kFlushInterval = 10.0;
 static NSMutableDictionary<NSString *, NSNumber *> *gBytesByMac;
 static NSMutableDictionary<NSString *, NSDate *> *gLastSeenByMac;
 static NSMutableSet<NSString *> *gTouchedMacs;
+// When the tap now open was opened, or nil while there is none. Published so
+// readers can tell "this client has been silent" from "nobody was listening":
+// after a bridge flap every per-client timestamp is stale at once, and a reader
+// that could not see the difference declared connected devices departed.
+static NSDate *gTapSince;
 static NSString *gDevicesPath = @"/var/mobile/Library/Caches/hotspotpro-devices.plist";
+
+// A one-line breadcrumb saying what this process is doing, so the UI and CLI
+// can explain why per-device figures or blocking are absent instead of only
+// showing "helper not running". Written on startup and at each state change —
+// never in a tight loop — so it cannot become the 8,600-writes-a-day problem
+// the state file once was. Its absence means the binary never ran at all, which
+// is itself the answer (a LaunchDaemon that never bootstrapped, or a signature
+// the device refused to exec).
+static NSString *gStatusPath = @"/var/mobile/Library/Caches/hotspotpro-daemon.plist";
+
+// MAC -> IP for every block this daemon has installed. Declared here, up with
+// the other state, because the flush publishes its keys — it is read well
+// before the blocking section that maintains it is reached in the file.
+static NSMutableDictionary<NSString *, NSString *> *gInstalledBlocks;
 
 // A client with a randomised MAC mints a new entry every time it reconnects, so
 // without a bound this file would grow for the life of the install.
@@ -88,6 +106,27 @@ static void HPDaemonLog(NSString *format, ...) {
     NSString *msg = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
     HPLog(@"[daemon] %@", msg);
+}
+
+/// Record what the daemon is doing right now. No-op when the state has not
+/// changed since the last call, so it is safe to call from inside the loop.
+static void HPWriteDaemonStatus(NSString *state) {
+    static NSString *last;
+    if ([state isEqualToString:last]) return;
+    last = state;
+    @try {
+        NSDictionary *payload = @{
+            @"state"    : state,
+            @"pid"      : @(getpid()),
+            @"firmware" : [[NSProcessInfo processInfo] operatingSystemVersionString] ?: @"?",
+            @"updated"  : [NSDate date],
+        };
+        [payload writeToFile:gStatusPath atomically:YES];
+        [[NSFileManager defaultManager] setAttributes:@{ NSFilePosixPermissions : @0644 }
+                                         ofItemAtPath:gStatusPath error:NULL];
+    } @catch (NSException *e) {
+        HPDaemonLog(@"status write failed: %@", e);
+    }
 }
 
 /// Forget devices that stopped appearing long ago, and cap the total.
@@ -126,7 +165,6 @@ static void HPPruneDevices(void) {
 
 /// Counters are written where the tweak (running as mobile) can read them.
 static void HPFlushCounters(void) {
-    if (!gBytesByMac.count) return;
     @try {
         // Stamp only the devices that actually moved data since the last flush,
         // so timestamps cost nothing per packet.
@@ -136,11 +174,20 @@ static void HPFlushCounters(void) {
         HPPruneDevices();
 
         NSString *tmp = [gDevicesPath stringByAppendingPathExtension:@"tmp"];
-        NSDictionary *payload = @{
+        NSMutableDictionary *payload = [@{
             @"bytesByMac"   : gBytesByMac,
             @"lastSeenByMac": gLastSeenByMac,
             @"updated"      : [NSDate date],
-        };
+        } mutableCopy];
+        // Absent rather than null while there is no tap, so a reader that finds
+        // it knows a tap was open at the moment this was written.
+        if (gTapSince) payload[@"tapSince"] = gTapSince;
+        // The MACs a reject route is actually installed for right now, so the
+        // UI can tell "the tracker wants this blocked" from "the block is
+        // really in place". They diverge when this daemon is not running or
+        // cannot write routes on this firmware, which is exactly the case that
+        // showed "Blocked" over a device that still had working internet.
+        payload[@"installedBlocks"] = [gInstalledBlocks allKeys];
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:payload
                                                                   format:NSPropertyListXMLFormat_v1_0
                                                                  options:0
@@ -162,8 +209,6 @@ static void HPFlushCounters(void) {
 
 #pragma mark - Blocking
 
-// MAC -> IP for every block this daemon has installed.
-static NSMutableDictionary<NSString *, NSString *> *gInstalledBlocks;
 static NSString *gInstalledPath = @"/var/mobile/Library/Caches/hotspotpro-installed.plist";
 
 /// Install or remove a reject route for one hotspot client.
@@ -221,8 +266,27 @@ static BOOL HPSetRouteBlock(NSString *ip, BOOL blocked) {
                     strerror(failure));
         return NO;
     }
-    HPDaemonLog(@"%@ %@", blocked ? @"blocked" : @"unblocked", ip);
+    // Announce only a real change (failure 0). EEXIST/ESRCH mean nothing moved,
+    // so the whole-subnet sweep below can call this for every client address
+    // without filling the log with "unblocked" lines for routes that were never
+    // there.
+    if (failure == 0) HPDaemonLog(@"%@ %@", blocked ? @"blocked" : @"unblocked", ip);
     return YES;
+}
+
+/// Delete any reject route sitting on a hotspot client address, tracked or not.
+///
+/// iOS hands clients 172.20.10.2 .. .14 (a /28, .1 is the phone, .15 broadcast),
+/// so sweeping that whole range clears a block no matter how it got there.
+/// This is the backstop that makes a block impossible to strand: a daemon
+/// killed between installing a route and recording it leaves an orphan that
+/// gInstalledBlocks and the installed-plist never knew about, which used to
+/// survive until a reboot. Deleting a route that is not there is a harmless
+/// ESRCH, so this is safe to run unconditionally.
+static void HPSweepHotspotRejectRoutes(void) {
+    for (int host = 2; host <= 14; host++) {
+        HPSetRouteBlock([NSString stringWithFormat:@"172.20.10.%d", host], NO);
+    }
 }
 
 static void HPSaveInstalledBlocks(void) {
@@ -256,6 +320,25 @@ static void HPApplyBlocklist(void) {
         }
 
         HPSaveInstalledBlocks();
+
+        // Self-heal, at most once a minute: delete any reject route on a client
+        // address that is NOT currently meant to be blocked. The loop above
+        // only touches routes this process tracks; this also clears an orphan
+        // left by a killed daemon, so no route can strand a device for more
+        // than about a minute even while the daemon runs on without restarting.
+        // It never deletes a wanted block (those IPs are skipped), and if the
+        // list read ever came back short it errs toward giving a device its
+        // connection back rather than cutting one off — the safe direction.
+        static NSDate *lastHeal;
+        NSDate *now = [NSDate date];
+        if (!lastHeal || [now timeIntervalSinceDate:lastHeal] >= 60.0) {
+            lastHeal = now;
+            NSSet *keep = [NSSet setWithArray:[desired allValues]];
+            for (int host = 2; host <= 14; host++) {
+                NSString *ip = [NSString stringWithFormat:@"172.20.10.%d", host];
+                if (![keep containsObject:ip]) HPSetRouteBlock(ip, NO);
+            }
+        }
     } @catch (NSException *e) {
         HPDaemonLog(@"blocklist apply failed: %@", e);
     }
@@ -307,6 +390,8 @@ static NSDictionary *HPFindBridge(void) {
 
 /// Open a free /dev/bpfN bound to `ifname`. Returns -1 on failure.
 static int HPOpenBPF(NSString *ifname) {
+    // Read-only: this tap only ever reads frames to count them. It does not
+    // write anything to the interface.
     int fd = -1;
     for (int i = 0; i < 32; i++) {
         char path[32];
@@ -383,15 +468,29 @@ static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
 
             // Whichever end is not the bridge itself is the client. Broadcast
             // and multicast are not devices.
-            NSString *client = [src isEqualToString:bridgeMac] ? dst : src;
+            BOOL fromClient = ![src isEqualToString:bridgeMac];
+            NSString *client = fromClient ? src : dst;
             unsigned int firstOctet = 0;
             sscanf([[client substringToIndex:2] UTF8String], "%x", &firstOctet);
             BOOL isGroupAddress = (firstOctet & 0x01) != 0;
+            // The snap length is 14, so the ethertype is always in hand.
+            BOOL isArp = bh->bh_caplen >= 14 && (const char *)frame + 14 <= end &&
+                         frame[12] == 0x08 && frame[13] == 0x06;
 
             if (!isGroupAddress && ![client isEqualToString:bridgeMac]) {
-                uint64_t prev = [gBytesByMac[client] unsignedLongLongValue];
-                gBytesByMac[client] = @(prev + bh->bh_datalen);
-                [gTouchedMacs addObject:client];
+                // An ARP frame the phone sent is one of the presence probes
+                // above: this daemon's own overhead, not the client's traffic.
+                // Counting those would trickle our bytes onto every device's
+                // total for as long as the hotspot was up.
+                if (fromClient || !isArp) {
+                    uint64_t prev = [gBytesByMac[client] unsignedLongLongValue];
+                    gBytesByMac[client] = @(prev + bh->bh_datalen);
+                }
+                // Bytes are counted in both directions; presence is not. Only a
+                // frame the client SENT is evidence that it is here — a frame
+                // the phone sent toward it proves nothing, least of all a probe,
+                // which would otherwise answer its own question.
+                if (fromClient) [gTouchedMacs addObject:client];
             }
         }
 
@@ -417,10 +516,16 @@ int main(int argc, char *argv[]) {
         NSOperatingSystemVersion ios18 = { 18, 0, 0 };
         if ([[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:ios18]) {
             HPDaemonLog(@"iOS 18+ — untested firmware, exiting without tapping");
+            HPWriteDaemonStatus(@"gated-ios18");
             return 0;
         }
+        HPWriteDaemonStatus(@"starting");
 
         HPClearStaleBlocks();
+        // And sweep the whole client range, so an orphan route no tracking file
+        // remembers — left by a daemon that was killed mid-block — is gone by
+        // the next start rather than surviving until a reboot.
+        HPSweepHotspotRejectRoutes();
 
         // Counters survive a hotspot session; they are cumulative since the
         // daemon started, and the tweak turns them into per-period figures by
@@ -467,22 +572,25 @@ int main(int argc, char *argv[]) {
                 // is captured and nothing is counted, and idle cheaply until it
                 // is switched back on.
                 if (![HPConfig()[HPCfgEnabledKey] boolValue]) {
+                    HPWriteDaemonStatus(@"tracking-off");
                     if (fd >= 0) {
                         HPDaemonLog(@"tracking disabled, closing tap");
                         close(fd);
                         fd = -1;
                         bridgeName = nil;
+                        gTapSince = nil;
                         HPFlushCounters();
                     }
-                    // Tracking off must not leave anyone cut off.
+                    // Tracking off must not leave anyone cut off. Clear what we
+                    // tracked, then sweep the whole client range so an orphan
+                    // route we no longer remember cannot strand a device —
+                    // which is exactly what made a blocked device stay cut off
+                    // even after tracking was switched off.
                     if (gInstalledBlocks.count) {
-                        for (NSString *mac in [gInstalledBlocks.allKeys copy]) {
-                            if (HPSetRouteBlock(gInstalledBlocks[mac], NO)) {
-                                [gInstalledBlocks removeObjectForKey:mac];
-                            }
-                        }
+                        [gInstalledBlocks removeAllObjects];
                         HPSaveInstalledBlocks();
                     }
+                    HPSweepHotspotRejectRoutes();
                     sleep(15);
                     continue;
                 }
@@ -496,6 +604,7 @@ int main(int argc, char *argv[]) {
                     close(fd);
                     fd = -1;
                     bridgeName = nil;
+                    gTapSince = nil;
                     HPFlushCounters();
                 }
 
@@ -505,12 +614,16 @@ int main(int argc, char *argv[]) {
                     fd = HPOpenBPF(bridgeName);
                     if (fd < 0) {
                         // Do not spin retrying a tap that cannot be opened.
+                        HPWriteDaemonStatus(@"no-bpf");
                         sleep(30);
                         continue;
                     }
+                    gTapSince = [NSDate date];
+                    HPWriteDaemonStatus(@"running");
                 }
 
                 if (fd < 0) {
+                    HPWriteDaemonStatus(@"hotspot-off");
                     // Hotspot off. Rather than waking on a timer to ask whether
                     // anything changed, block until the kernel says so: the
                     // routing socket becomes readable the moment an interface
@@ -564,6 +677,7 @@ int main(int argc, char *argv[]) {
                         if (errno != ENXIO) HPDaemonLog(@"read: %s", strerror(errno));
                         close(fd);
                         fd = -1;
+                        gTapSince = nil;
                         HPFlushCounters();
                     }
                 }

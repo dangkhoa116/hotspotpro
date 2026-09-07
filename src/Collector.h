@@ -122,6 +122,36 @@ BOOL HPHotspotIsActive(NSArray<NSDictionary *> *ifaces);
 /// not running, so callers must treat absence as "unknown", not "gone".
 NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void);
 
+/// When the daemon's current packet tap was opened, or nil when it has none.
+///
+/// Silence only means something once the tap has been listening for longer than
+/// the silence being interpreted: the tap closes and reopens whenever the
+/// tethering bridge flaps, and every per-client timestamp is stale for a while
+/// afterwards through no fault of the clients.
+NSDate *HPDaemonTapSince(void);
+
+/// Whether the daemon is actively probing its clients — sending each one a
+/// unicast ARP request every 10s — rather than only listening. It answers a
+/// question the network cannot be relied on to answer unasked, so presence can
+/// be judged on a much shorter window when this is true.
+BOOL HPDaemonIsProbing(void);
+
+/// The daemon's own breadcrumb: what it is doing and why, or nil when it has
+/// never run. Keys: "state" (NSString — "gated-ios18", "tracking-off",
+/// "no-bpf", "hotspot-off", "running", "running-noprobe", "starting"), "pid",
+/// "firmware", and "updated" (NSDate). Nil is itself an answer: the LaunchDaemon
+/// never bootstrapped, or the device refused to exec the binary.
+NSDictionary *HPCopyDaemonStatus(void);
+
+/// The client MACs the daemon has an active reject route installed for, as of
+/// its last flush. This is what is *actually* enforced, which is not the same
+/// as what the tracker decided should be blocked: they diverge when the daemon
+/// is not running or cannot write routes, and a caller that wants to tell a
+/// device the truth about its own status must check this, not only the
+/// tracker's blocklist. Pair it with HPDaemonLastFlush() to know how current
+/// it is. Empty when the daemon has never run.
+NSArray<NSString *> *HPDaemonBlockedMacs(void);
+
 /// When the daemon last wrote its counters — every 10s while its tap is open,
 /// whether or not any traffic arrived. This is the heartbeat that says "the
 /// silence of a given client means something", which per-client timestamps
@@ -187,6 +217,50 @@ NSArray<NSDictionary *> *HPCopyDhcpLeases(void);
 /// Devices connected right now: ARP neighbours on the hotspot interfaces,
 /// joined to lease records by MAC so they carry a name where one is known.
 NSArray<NSDictionary *> *HPCopyConnectedDevices(NSArray<NSString *> *hotspotIfNames);
+
+/// The same list with the devices that have actually left taken out.
+///
+/// HPCopyConnectedDevices() reports what the ARP table claims, and the ARP
+/// table only ever records that a client *was* here: a departed device's entry
+/// stops being refreshed and sits there counting down for the rest of its
+/// lifetime. This is the function to ask "who is connected right now".
+///
+/// A device stays on the list unless three independent signals all say nothing
+/// has been heard from it — the root daemon's packet tap, the kernel's ARP
+/// expiry, and the DHCP lease end — for the whole window running, and even then
+/// only once the tap has demonstrably been listening for that span.
+///
+/// The window is 45s while the daemon is probing, because then silence is
+/// silence in the face of four unanswered ARP requests. With no probes going
+/// out it widens to four minutes: an idle client is entitled to say nothing for
+/// minutes at a time, and anything shorter reports connected devices as
+/// offline and back again.
+///
+/// Keeps a little per-process state, so successive calls are what makes it
+/// work; calls within the same second share one answer, which is what keeps
+/// every row of a pane agreeing with the count above it.
+NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfNames);
+
+// The thresholds the rule above turns on, exposed so a test can express itself
+// in terms of them rather than restating the numbers.
+extern const NSTimeInterval HPSilentCutoff;       // unheard this long -> gone
+extern const NSTimeInterval HPSilentCutoffProbed;// ...and this long, while probing
+extern const NSTimeInterval HPDaemonStaleAfter;  // heartbeat older than this means nothing
+extern const int HPMissesNeeded;                 // consecutive silent polls before dropping
+
+/// The presence rule itself, with every input passed in.
+///
+/// Split out from HPCopyPresentDevices() so it can be exercised without a
+/// hotspot, a daemon or a clock: `hotspotpro selftest` drives it. `books` holds
+/// what the rule remembers between polls — an empty mutable dictionary on the
+/// first call, the same one thereafter — and `now` is the moment being judged.
+NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
+                                                NSDictionary<NSString *, NSDate *> *lastSeen,
+                                                NSDate *tapSince,
+                                                NSDate *lastFlush,
+                                                BOOL probing,
+                                                NSMutableDictionary *books,
+                                                NSDate *now);
 
 #pragma mark - Helpers
 

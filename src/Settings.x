@@ -142,53 +142,15 @@ static HPSettingsHelper *gHelper;
 ///
 /// Byte totals still come from the state file: those are the collector's to
 /// compute, and only presence needs to be current.
+///
+/// The judgement of which ARP neighbours have actually left lives in the
+/// collector, so that this pane, the summary row on the stock pane and the
+/// refresh signatures all reach the same answer from one piece of code —
+/// three call sites deciding it separately is how the count in the status row
+/// came to contradict the rows underneath it.
 static NSArray *HPLiveConnectedDevices(void) {
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
-    NSArray *arp = HPCopyConnectedDevices(HPHotspotInterfaceNames(ifaces)) ?: @[];
-
-    // The ARP table records that a client was here; it never records that one
-    // left. A departed device's entry simply stops being refreshed and sits
-    // there counting down, so it kept appearing as connected for minutes after
-    // disconnecting. The daemon's tap supplies the missing half: a frame
-    // actually received, with a timestamp. Anything silent for a while is gone.
-    //
-    // rmx_expire looks like it should answer this and does not reliably — how
-    // often the kernel refreshes it is a detail nobody here has measured, and a
-    // wrong guess would hide devices that are genuinely connected.
-    NSDictionary<NSString *, NSDate *> *lastSeen = HPCopyDaemonLastSeen();
-    if (lastSeen.count == 0) return arp;   // no daemon data: unknown, not gone
-
-    // How long a client may go unheard before it is treated as gone. Its last
-    // frame is stamped at the next flush, up to 10s later, so the real delay is
-    // this plus about ten seconds.
-    static const NSTimeInterval kSilentCutoff = 30.0;
-    // How stale the daemon's own heartbeat may be before its silence stops
-    // meaning anything.
-    static const NSTimeInterval kDaemonStale = 30.0;
-    NSDate *now = [NSDate date];
-
-    // Only trust this filter while the daemon is demonstrably capturing: its tap
-    // closes whenever the bridge flaps, and every per-client timestamp then ages
-    // at once, which once hid devices that were connected throughout.
-    //
-    // The gate is the daemon's own flush time, not the freshest per-client
-    // stamp. Those are the same thing until the last client leaves — at which
-    // point traffic stops, every client stamp goes stale together, and a
-    // freshest-stamp gate would switch the filter off exactly when it was needed
-    // and leave the departed device on screen. The flush heartbeat keeps
-    // ticking every 10s regardless of traffic.
-    NSDate *heartbeat = HPDaemonLastFlush();
-    if (!heartbeat || [now timeIntervalSinceDate:heartbeat] > kDaemonStale) return arp;
-    NSMutableArray *present = [NSMutableArray array];
-    for (NSDictionary *dev in arp) {
-        NSDate *seen = lastSeen[dev[HPDevMacKey]];
-        // A MAC the daemon has no record of has usually just joined and not
-        // been flushed yet. Keep it: never invent a departure from silence.
-        if (!seen || [now timeIntervalSinceDate:seen] <= kSilentCutoff) {
-            [present addObject:dev];
-        }
-    }
-    return present;
+    return HPCopyPresentDevices(HPHotspotInterfaceNames(ifaces)) ?: @[];
 }
 
 /// "Is the hotspot on", smoothed.
@@ -278,7 +240,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     NSDictionary *state = HPStateLoad();
     uint64_t total = [state[HPStTotalBytesKey] unsignedLongLongValue];
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
-    NSUInteger devices = HPCopyConnectedDevices(HPHotspotInterfaceNames(ifaces)).count;
+    NSUInteger devices = HPCopyPresentDevices(HPHotspotInterfaceNames(ifaces)).count;
 
     NSString *summary;
     if (devices > 0) {
@@ -375,15 +337,29 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     // Live, matching what the rows are built from. Read from the state file
     // instead, this signature would not change when a device left, so the rows
     // would never be rebuilt and the departed device would stay on screen.
+    //
+    // The DISPLAYED name is included, not just the MAC: a row's title is fixed
+    // when the row is built, so a rename only shows once the rows are rebuilt,
+    // and the rebuild only happens when this signature changes. Renaming a
+    // connected device left the old name on screen until it reconnected.
+    NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
+    if (![nicknames isKindOfClass:[NSDictionary class]]) nicknames = @{};
     for (NSDictionary *d in HPLiveConnectedDevices()) {
-        [sig appendFormat:@"%@,", d[HPDevMacKey]];
+        NSString *mac = d[HPDevMacKey] ?: @"";
+        NSString *shown = [nicknames[mac] length] ? nicknames[mac]
+                                                  : (d[HPDevNameKey] ?: @"");
+        [sig appendFormat:@"%@=%@,", mac, shown];
     }
     [sig appendString:@"|"];
 
-    // Offline devices with usage get a row too, so they belong here.
+    // Offline devices with usage get a row too, so they belong here — with the
+    // name they display, for the same rename reason as above.
     NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
     for (NSString *mac in [seen.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        if ([seen[mac][@"bytes"] unsignedLongLongValue] > 0) [sig appendFormat:@"%@,", mac];
+        if ([seen[mac][@"bytes"] unsignedLongLongValue] == 0) continue;
+        NSString *shown = [nicknames[mac] length] ? nicknames[mac]
+                                                  : (seen[mac][@"name"] ?: mac);
+        [sig appendFormat:@"%@=%@,", mac, shown];
     }
     return sig;
 }
@@ -400,7 +376,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     // byte total happened to change.
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
     [sig appendFormat:@"%d|%lu|", (int)HPHotspotIsActiveSmoothed(ifaces),
-                      (unsigned long)HPCopyConnectedDevices(
+                      (unsigned long)HPCopyPresentDevices(
                           HPHotspotInterfaceNames(ifaces)).count];
 
     NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
@@ -653,6 +629,34 @@ static NSArray *HPBuildBodySpecifiers(void) {
     return @([limits[[self hpMac]] doubleValue]);
 }
 
+/// The user-set nickname, or empty. The DHCP name a device announces is shown
+/// as a placeholder instead, so the field is not misread as already holding it.
+- (id)hpNameValue:(PSSpecifier *)spec {
+    NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
+    return ([nicknames isKindOfClass:[NSDictionary class]] ? nicknames[[self hpMac]] : nil) ?: @"";
+}
+
+- (void)setHpName:(id)value specifier:(PSSpecifier *)spec {
+    NSMutableDictionary *cfg =
+        [([NSDictionary dictionaryWithContentsOfFile:HPConfigPath()] ?: @{}) mutableCopy];
+    NSMutableDictionary *nicknames = [(cfg[HPCfgNicknamesKey] ?: @{}) mutableCopy];
+
+    NSString *name = [value isKindOfClass:[NSString class]] ? value : nil;
+    name = [name stringByTrimmingCharactersInSet:
+                     [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (name.length) nicknames[[self hpMac]] = name;
+    else [nicknames removeObjectForKey:[self hpMac]];   // cleared: back to the DHCP name
+
+    cfg[HPCfgNicknamesKey] = nicknames;
+    [cfg writeToFile:HPConfigPath() atomically:YES];
+
+    // The nickname is baked into device rows and the "seen this period" record
+    // by the collector, so a tick rebuilds them under the new name; do it now
+    // rather than waiting for the next sample.
+    self.title = name.length ? name : [self hpMac];
+    HPPostTickRequest();
+}
+
 - (void)setHpDeviceLimit:(id)value specifier:(PSSpecifier *)spec {
     NSMutableDictionary *cfg =
         [([NSDictionary dictionaryWithContentsOfFile:HPConfigPath()] ?: @{}) mutableCopy];
@@ -680,10 +684,30 @@ static NSArray *HPBuildBodySpecifiers(void) {
 }
 
 - (id)hpStatusValue:(PSSpecifier *)spec {
-    NSArray *blocked = HPStateLoad()[HPStBlockedMacsKey] ?: @[];
-    if ([blocked containsObject:[self hpMac]]) return @"Blocked — over its limit";
+    NSString *mac = [self hpMac];
+    BOOL wantBlocked = [(HPStateLoad()[HPStBlockedMacsKey] ?: @[]) containsObject:mac];
 
-    double limit = [HPConfig()[HPCfgDeviceLimitsKey][[self hpMac]] doubleValue];
+    if (wantBlocked) {
+        // "Blocked" is a claim about the routing table, and only the daemon
+        // touches that. Say it is blocked only when the daemon confirms the
+        // route is in and its heartbeat is recent; otherwise be honest that the
+        // device is over its limit but still has a working connection, which is
+        // what a dead or route-less daemon leaves behind.
+        BOOL enforced = [HPDaemonBlockedMacs() containsObject:mac];
+        NSDate *flush = HPDaemonLastFlush();
+        BOOL daemonAlive = flush && [[NSDate date] timeIntervalSinceDate:flush] <= 60.0;
+        if (enforced && daemonAlive) return @"Blocked — over its limit";
+        // Not actually cut off. Name why, from the daemon's own breadcrumb, so
+        // this is a lead rather than a dead end.
+        NSString *state = HPCopyDaemonStatus()[@"state"];
+        NSString *why = @"helper not running";
+        if ([state isEqualToString:@"gated-ios18"])   why = @"unsupported on iOS 18";
+        else if ([state isEqualToString:@"tracking-off"]) why = @"tracking is off";
+        else if ([state isEqualToString:@"no-bpf"])   why = @"helper can't capture";
+        return [NSString stringWithFormat:@"Over limit — not enforced (%@)", why];
+    }
+
+    double limit = [HPConfig()[HPCfgDeviceLimitsKey][mac] doubleValue];
     return limit > 0 ? @"Allowed" : @"No limit set";
 }
 
@@ -701,6 +725,27 @@ static NSArray *HPBuildBodySpecifiers(void) {
     }
 
     NSMutableArray *specs = [NSMutableArray array];
+
+    [specs addObject:HPGroup(@"NAME", @"A name for this device in the list above. "
+                                       "Leave it blank to use the name the device "
+                                       "reports for itself.")];
+    PSSpecifier *name = [PSSpecifier preferenceSpecifierNamed:@"Name"
+                                                       target:self
+                                                          set:@selector(setHpName:specifier:)
+                                                          get:@selector(hpNameValue:)
+                                                       detail:nil
+                                                         cell:PSEditTextCell
+                                                         edit:nil];
+    // The DHCP name shown when nothing is set, so the field reads as a rename
+    // rather than an empty box.
+    NSDictionary *seenNow = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSString *dhcpName = seenNow[[self hpMac]][@"name"];
+    if (dhcpName.length && ![dhcpName isEqualToString:[self hpMac]]) {
+        [name setProperty:dhcpName forKey:@"placeholder"];
+    } else {
+        [name setProperty:@"Device name" forKey:@"placeholder"];
+    }
+    [specs addObject:name];
 
     [specs addObject:HPGroup(@"THIS PERIOD", nil)];
     PSSpecifier *used = [PSSpecifier preferenceSpecifierNamed:@"Used"
@@ -786,8 +831,11 @@ static NSArray *HPBuildBodySpecifiers(void) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     @try {
+        NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
+        NSString *nick = [nicknames isKindOfClass:[NSDictionary class]]
+                             ? nicknames[[self hpMac]] : nil;
         NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
-        self.title = seen[[self hpMac]][@"name"] ?: [self hpMac];
+        self.title = nick.length ? nick : (seen[[self hpMac]][@"name"] ?: [self hpMac]);
     } @catch (NSException *e) {}
 }
 
@@ -801,10 +849,20 @@ static NSArray *HPBuildDeviceRows(void) {
     NSMutableArray *specs = [NSMutableArray array];
     NSArray *devices = HPLiveConnectedDevices();
 
+    // A nickname the user set on a device's own page wins over the name the
+    // device announces over DHCP — which for a client with a randomised MAC is
+    // often missing entirely. The collector applies the same preference to the
+    // "seen this period" record, so a renamed device reads the same whether it
+    // is connected now (this list) or offline (the list below).
+    NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
+    if (![nicknames isKindOfClass:[NSDictionary class]]) nicknames = @{};
+
     for (NSDictionary *dev in devices) {
+        NSString *nick = nicknames[dev[HPDevMacKey]];
+        NSString *shown = nick.length ? nick : (dev[HPDevNameKey] ?: @"Device");
         // Built with a getter like every other value row, rather than a static
         // "value" property, which a PSTitleValueCell does not reliably display.
-        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:dev[HPDevNameKey] ?: @"Device"
+        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:shown
                                                           target:helper
                                                              set:NULL
                                                              get:@selector(deviceValue:)
@@ -844,8 +902,10 @@ static NSArray *HPBuildDeviceRows(void) {
 
     for (NSString *mac in offline) {
         NSDictionary *record = seen[mac];
+        NSString *nick = nicknames[mac];
+        NSString *shown = nick.length ? nick : (record[@"name"] ?: mac);
 
-        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:record[@"name"] ?: mac
+        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:shown
                                                           target:helper
                                                              set:NULL
                                                              get:@selector(deviceValue:)
@@ -879,6 +939,7 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
     NSString *_hpStructure;
     NSString *_hpValues;
     BOOL _hpEnabled;
+    BOOL _hpAppearedOnce;
 }
 
 - (NSArray *)specifiers {
@@ -917,6 +978,17 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
     [super viewWillAppear:animated];
     @try {
         HPSettingsHelper *helper = [HPSettingsHelper shared];
+
+        // Coming BACK to this pane — e.g. after renaming a device on its own
+        // page — the rows on screen were built before the change. Rebuild them
+        // now so the new name shows at once. Skipped on the very first
+        // appearance, where -specifiers has just built them fresh and the table
+        // is not up yet. Without this, re-baselining the signature just below
+        // made hpTick compare equal-to-equal and never repaint, so a rename
+        // never showed in the list.
+        if (_hpAppearedOnce) [self hpUpdateDeviceRows];
+        _hpAppearedOnce = YES;
+
         _hpStructure = [helper structureSignature];
         _hpValues = [helper valueSignature];
         _hpEnabled = [HPConfig()[HPCfgEnabledKey] boolValue];

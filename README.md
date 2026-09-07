@@ -41,7 +41,18 @@ means a reset can never race a sample.
   tethering. Measured on-device: `bridge100` counts every forwarded packet
   *twice*, so counting the bridge would double your usage.
 - **Device names** — `/var/db/dhcpd_leases`, the hotspot's own DHCP records.
-- **Who is connected** — the ARP table, filtered to the hotspot subnet.
+- **Who is connected** — the ARP table, filtered to the hotspot subnet, minus
+  the clients that have left. ARP only ever records that a device *was* here, and
+  waiting to overhear a client cannot tell "gone" from "idle": a connected device
+  with its screen off is entitled to say nothing for minutes, and a
+  thirty-second window reported those as offline and back again. So the daemon
+  **asks** — one unicast ARP request per client every 10s, sent through the tap
+  it already has open, skipping any client that has spoken since the last flush.
+  A device that is still associated answers in milliseconds. Silence in the face
+  of four unanswered questions is a departure; the window is 45s. If the tap
+  cannot be opened for writing the daemon says so, no probes go out, and the
+  window widens to four minutes — the passive rule, still corroborated by the
+  kernel's ARP expiry and the DHCP lease end.
 - **Per-device bytes** — a BPF tap on the tethering bridge with a 14-byte snap
   length, so the kernel copies only each frame's Ethernet header while the
   frame's true length is still counted. Reads are batched; with the hotspot off
@@ -57,7 +68,10 @@ Everything stays on the device. Nothing is uploaded anywhere.
 
 The daemon reads packet **headers** on the tethering bridge to attribute bytes
 to devices — it captures 14 bytes per frame, which is the Ethernet header, and
-never packet contents. It stores client MAC addresses, the names those devices
+never packet contents. It also sends one 42-byte ARP request to each connected
+client every 10s to ask whether it is still there, which is what every router's
+device list does; nothing is broadcast, nothing leaves the hotspot's own subnet,
+and those frames are excluded from your usage totals. It stores client MAC addresses, the names those devices
 announce over DHCP, and byte counts, in
 `/var/mobile/Library/Caches/hotspotpro-*.plist`. Device records are forgotten
 after 45 days. Switching **Track Hotspot Usage** off closes the tap entirely.
