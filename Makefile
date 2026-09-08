@@ -39,6 +39,13 @@ include $(THEOS)/makefiles/common.mk
 # write the same files. The roothide fork of Theos is required to build this.
 ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
 HP_SCHEME_LDFLAGS = -lroothide
+# Ad-hoc signing with no entitlements leaves the two tools unable to load
+# libroothide: dyld finds it and AMFI refuses it, errno 1, and launchd then
+# respawns the daemon every ThrottleInterval forever. platform-application is
+# what the bootstrap's own daemons carry, and it is what lifts that.
+HP_TOOL_CODESIGN = -Sroothide-entitlements.plist
+else
+HP_TOOL_CODESIGN = -S
 endif
 
 # TWO tweak dylibs, not one, and the split is deliberate.
@@ -82,7 +89,7 @@ hotspotpro_FILES = main.m Collector.m Prefs.m Tracker.m
 hotspotpro_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 hotspotpro_FRAMEWORKS = Foundation
 hotspotpro_LDFLAGS = $(HP_SCHEME_LDFLAGS)
-hotspotpro_CODESIGN_FLAGS = -S
+hotspotpro_CODESIGN_FLAGS = $(HP_TOOL_CODESIGN)
 
 # The per-device counter. Runs as root from a LaunchDaemon, so it installs to
 # libexec rather than bin — it is not meant to be run by hand.
@@ -90,7 +97,7 @@ hotspotprod_FILES = Daemon.m Collector.m Prefs.m
 hotspotprod_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 hotspotprod_FRAMEWORKS = Foundation
 hotspotprod_LDFLAGS = $(HP_SCHEME_LDFLAGS)
-hotspotprod_CODESIGN_FLAGS = -S
+hotspotprod_CODESIGN_FLAGS = $(HP_TOOL_CODESIGN)
 hotspotprod_INSTALL_PATH = /usr/libexec
 
 include $(THEOS_MAKE_PATH)/tool.mk
