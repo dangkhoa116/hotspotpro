@@ -426,6 +426,7 @@ NSString *HPNormaliseMac(NSString *raw) {
 }
 
 NSArray<NSDictionary *> *HPCopyDhcpLeases(void) {
+    // iOS writes this one, so it is a real filesystem path under every scheme.
     NSString *path = @"/var/db/dhcpd_leases";
     NSString *text = [NSString stringWithContentsOfFile:path
                                                encoding:NSUTF8StringEncoding
