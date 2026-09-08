@@ -84,16 +84,6 @@ static NSMutableSet<NSString *> *gTouchedMacs;
 // after a bridge flap every per-client timestamp is stale at once, and a reader
 // that could not see the difference declared connected devices departed.
 static NSDate *gTapSince;
-static NSString *gDevicesPath = @"/var/mobile/Library/Caches/hotspotpro-devices.plist";
-
-// A one-line breadcrumb saying what this process is doing, so the UI and CLI
-// can explain why per-device figures or blocking are absent instead of only
-// showing "helper not running". Written on startup and at each state change —
-// never in a tight loop — so it cannot become the 8,600-writes-a-day problem
-// the state file once was. Its absence means the binary never ran at all, which
-// is itself the answer (a LaunchDaemon that never bootstrapped, or a signature
-// the device refused to exec).
-static NSString *gStatusPath = @"/var/mobile/Library/Caches/hotspotpro-daemon.plist";
 
 // MAC -> IP for every block this daemon has installed. Declared here, up with
 // the other state, because the flush publishes its keys — it is read well
@@ -116,6 +106,14 @@ static void HPDaemonLog(NSString *format, ...) {
 
 /// Record what the daemon is doing right now. No-op when the state has not
 /// changed since the last call, so it is safe to call from inside the loop.
+///
+/// A one-line breadcrumb saying what this process is doing, so the UI and CLI
+/// can explain why per-device figures or blocking are absent instead of only
+/// showing "helper not running". Written on startup and at each state change —
+/// never in a tight loop — so it cannot become the 8,600-writes-a-day problem
+/// the state file once was. Its absence means the binary never ran at all, which
+/// is itself the answer (a LaunchDaemon that never bootstrapped, or a signature
+/// the device refused to exec).
 static void HPWriteDaemonStatus(NSString *state) {
     static NSString *last;
     if ([state isEqualToString:last]) return;
@@ -127,9 +125,10 @@ static void HPWriteDaemonStatus(NSString *state) {
             @"firmware" : [[NSProcessInfo processInfo] operatingSystemVersionString] ?: @"?",
             @"updated"  : [NSDate date],
         };
-        [payload writeToFile:gStatusPath atomically:YES];
+        NSString *statusPath = HPDaemonStatusPath();
+        [payload writeToFile:statusPath atomically:YES];
         [[NSFileManager defaultManager] setAttributes:@{ NSFilePosixPermissions : @0644 }
-                                         ofItemAtPath:gStatusPath error:NULL];
+                                         ofItemAtPath:statusPath error:NULL];
     } @catch (NSException *e) {
         HPDaemonLog(@"status write failed: %@", e);
     }
@@ -183,7 +182,8 @@ static void HPFlushCounters(void) {
         [gTouchedMacs removeAllObjects];
         HPPruneDevices();
 
-        NSString *tmp = [gDevicesPath stringByAppendingPathExtension:@"tmp"];
+        NSString *devicesPath = HPDevicesPath();
+        NSString *tmp = [devicesPath stringByAppendingPathExtension:@"tmp"];
         NSMutableDictionary *payload = [@{
             @"bytesByMac"   : gBytesByMac,
             @"uploadByMac"  : gUploadByMac,
@@ -208,11 +208,11 @@ static void HPFlushCounters(void) {
         [data writeToFile:tmp atomically:NO];
 
         NSFileManager *fm = [NSFileManager defaultManager];
-        [fm removeItemAtPath:gDevicesPath error:NULL];
-        [fm moveItemAtPath:tmp toPath:gDevicesPath error:NULL];
+        [fm removeItemAtPath:devicesPath error:NULL];
+        [fm moveItemAtPath:tmp toPath:devicesPath error:NULL];
         // Written by root, read by the tweak inside SpringBoard and Preferences.
         [fm setAttributes:@{ NSFilePosixPermissions : @0644 }
-             ofItemAtPath:gDevicesPath
+             ofItemAtPath:devicesPath
                     error:NULL];
     } @catch (NSException *e) {
         HPDaemonLog(@"flush failed: %@", e);
@@ -220,8 +220,6 @@ static void HPFlushCounters(void) {
 }
 
 #pragma mark - Blocking
-
-static NSString *gInstalledPath = @"/var/mobile/Library/Caches/hotspotpro-installed.plist";
 
 /// Install or remove a reject route for one hotspot client.
 ///
@@ -302,7 +300,7 @@ static void HPSweepHotspotRejectRoutes(void) {
 }
 
 static void HPSaveInstalledBlocks(void) {
-    [gInstalledBlocks writeToFile:gInstalledPath atomically:YES];
+    [gInstalledBlocks writeToFile:HPInstalledBlocksPath() atomically:YES];
 }
 
 /// Bring the routing table in line with the collector's blocklist.
@@ -372,13 +370,14 @@ static void HPDrainRouteSocket(int rs) {
 /// is torn down before we start — otherwise a device could stay cut off with
 /// nothing left that knows why.
 static void HPClearStaleBlocks(void) {
-    NSDictionary *stale = [NSDictionary dictionaryWithContentsOfFile:gInstalledPath];
+    NSString *installedPath = HPInstalledBlocksPath();
+    NSDictionary *stale = [NSDictionary dictionaryWithContentsOfFile:installedPath];
     if (![stale isKindOfClass:[NSDictionary class]] || stale.count == 0) return;
 
     HPDaemonLog(@"clearing %lu route block(s) left from a previous run",
                 (unsigned long)stale.count);
     for (NSString *mac in stale) HPSetRouteBlock(stale[mac], NO);
-    [[NSFileManager defaultManager] removeItemAtPath:gInstalledPath error:NULL];
+    [[NSFileManager defaultManager] removeItemAtPath:installedPath error:NULL];
 }
 
 #pragma mark - Capture
@@ -540,7 +539,7 @@ int main(int argc, char *argv[]) {
         // Counters survive a hotspot session; they are cumulative since the
         // daemon started, and the tweak turns them into per-period figures by
         // taking deltas (and treating a drop as a daemon restart).
-        NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:gDevicesPath];
+        NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
         if ([existing[@"bytesByMac"] isKindOfClass:[NSDictionary class]]) {
             [gBytesByMac addEntriesFromDictionary:existing[@"bytesByMac"]];
             // Directional counters were added in 0.7.0; an older file has none,

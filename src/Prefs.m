@@ -55,6 +55,18 @@ NSString *HPBlocklistPath(void) {
     return @"/var/mobile/Library/Caches/hotspotpro-blocklist.plist";
 }
 
+NSString *HPDevicesPath(void) {
+    return @"/var/mobile/Library/Caches/hotspotpro-devices.plist";
+}
+
+NSString *HPDaemonStatusPath(void) {
+    return @"/var/mobile/Library/Caches/hotspotpro-daemon.plist";
+}
+
+NSString *HPInstalledBlocksPath(void) {
+    return @"/var/mobile/Library/Caches/hotspotpro-installed.plist";
+}
+
 #pragma mark - Config
 
 NSDictionary *HPConfig(void) {
