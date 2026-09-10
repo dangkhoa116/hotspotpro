@@ -287,11 +287,14 @@ uint64_t HPTotalBytes(NSArray<NSDictionary *> *ifaces, NSArray<NSString *> *name
 
 #pragma mark - Accumulation
 
-uint64_t HPAccumulateDelta(NSMutableDictionary *last,
-                           NSArray<NSDictionary *> *ifaces,
-                           NSArray<NSString *> *names,
-                           BOOL baselineOnly) {
-    uint64_t added = 0;
+uint64_t HPAccumulateDeltaSplit(NSMutableDictionary *last,
+                                NSArray<NSDictionary *> *ifaces,
+                                NSArray<NSString *> *names,
+                                BOOL baselineOnly,
+                                uint64_t *addedUp,
+                                uint64_t *addedDown) {
+    uint64_t up = 0;    // ap1 ibytes: client -> internet
+    uint64_t down = 0;  // ap1 obytes: internet -> client
 
     for (NSString *name in names) {
         NSDictionary *cur = HPInterfaceNamed(ifaces, name);
@@ -306,8 +309,8 @@ uint64_t HPAccumulateDelta(NSMutableDictionary *last,
             uint64_t po = [prev[HPLastOutBytesKey] unsignedLongLongValue];
             // A counter that went backwards means the interface was torn down
             // and recreated (hotspot toggled), so the new value is the delta.
-            added += (ci >= pi) ? (ci - pi) : ci;
-            added += (co >= po) ? (co - po) : co;
+            up   += (ci >= pi) ? (ci - pi) : ci;
+            down += (co >= po) ? (co - po) : co;
         }
         // First sight of an interface adds NOTHING; it is only baselined.
         //
@@ -323,7 +326,16 @@ uint64_t HPAccumulateDelta(NSMutableDictionary *last,
         last[name] = @{ HPLastInBytesKey : @(ci), HPLastOutBytesKey : @(co) };
     }
 
-    return added;
+    if (addedUp)   *addedUp = up;
+    if (addedDown) *addedDown = down;
+    return up + down;
+}
+
+uint64_t HPAccumulateDelta(NSMutableDictionary *last,
+                           NSArray<NSDictionary *> *ifaces,
+                           NSArray<NSString *> *names,
+                           BOOL baselineOnly) {
+    return HPAccumulateDeltaSplit(last, ifaces, names, baselineOnly, NULL, NULL);
 }
 
 #pragma mark - ARP
@@ -736,6 +748,20 @@ NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
 }
 
+NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceUpload(void) {
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
+                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *bytes = file[@"uploadByMac"];
+    return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
+}
+
+NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceDownload(void) {
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
+                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *bytes = file[@"downloadByMac"];
+    return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
+}
+
 NSDictionary *HPCopyDaemonStatus(void) {
     NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
                               @"/var/mobile/Library/Caches/hotspotpro-daemon.plist"];
@@ -777,6 +803,26 @@ NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void) {
 }
 
 #pragma mark - Helpers
+
+BOOL HPMacIsPrivate(NSString *mac) {
+    // The second-least-significant bit of the first octet is the "locally
+    // administered" bit; a randomised (private) MAC sets it. 172.20.10.x clients
+    // that turned it on show up here, and their address tells us nothing about
+    // the hardware and changes on every reconnect.
+    if (mac.length < 2) return NO;
+    unsigned int first = 0;
+    [[NSScanner scannerWithString:[mac substringToIndex:2]] scanHexInt:&first];
+    return (first & 0x02) != 0;
+}
+
+NSString *HPDeviceDisplayName(NSString *mac, NSString *dhcpName, NSString *nickname) {
+    if (nickname.length) return nickname;
+    // The DHCP name is what the device calls itself ("Johns-iPhone"); prefer it,
+    // but never when it is just the MAC echoed back, which reads as no name.
+    if (dhcpName.length && ![dhcpName isEqualToString:mac]) return dhcpName;
+    if (HPMacIsPrivate(mac)) return @"Private Address";
+    return @"Device";
+}
 
 NSString *HPFormatBytes(uint64_t bytes) {
     double b = (double)bytes;
