@@ -7,6 +7,7 @@ NSString *const HPCfgResetDayKey    = @"resetDay";
 NSString *const HPCfgWarnPercentKey = @"warnPercent";
 NSString *const HPCfgNicknamesKey    = @"nicknames";
 NSString *const HPCfgDeviceLimitsKey = @"deviceLimits";
+NSString *const HPCfgManualBlocksKey = @"manualBlocks";
 
 NSString *const HPPrefsChangedNotification = @"com.dangkhoa.hotspotpro/prefschanged";
 const char *const HPTickRequestNotification = "com.dangkhoa.hotspotpro/tick";
@@ -16,11 +17,15 @@ void HPPostTickRequest(void) {
 }
 
 NSString *const HPStTotalBytesKey   = @"totalBytes";
+NSString *const HPStUploadBytesKey   = @"uploadBytes";   // client -> internet (ap1 ibytes)
+NSString *const HPStDownloadBytesKey = @"downloadBytes"; // internet -> client (ap1 obytes)
 NSString *const HPStPeriodStartKey  = @"periodStart";
 NSString *const HPStNextResetKey    = @"nextReset";
 NSString *const HPStLastRawKey      = @"lastRaw";
 NSString *const HPStBaselinedKey    = @"baselined";
 NSString *const HPStLastDevRawKey   = @"lastDevRaw";
+NSString *const HPStLastDevRawUpKey  = @"lastDevRawUp";   // per-mac upload baseline
+NSString *const HPStLastDevRawDownKey = @"lastDevRawDown"; // per-mac download baseline
 NSString *const HPStDevBaselinedKey = @"devBaselined";
 NSString *const HPStWarnFiredKey    = @"warnFired";
 NSString *const HPStLimitFiredKey   = @"limitFired";
@@ -61,6 +66,7 @@ NSDictionary *HPConfig(void) {
         HPCfgWarnPercentKey : @80,
         HPCfgNicknamesKey    : @{},
         HPCfgDeviceLimitsKey : @{},
+        HPCfgManualBlocksKey : @{},
     } mutableCopy];
     if ([onDisk isKindOfClass:[NSDictionary class]]) [cfg addEntriesFromDictionary:onDisk];
 

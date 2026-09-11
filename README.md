@@ -75,6 +75,24 @@ docs/      the generated APT repo, served by GitHub Pages
 
 ## Changelog
 
+**0.7.0**
+- **Block a device from the hotspot.** Each device's page has a *Block from
+  Hotspot* switch: the root daemon installs a host reject route for that client,
+  so it can no longer reach the internet through your hotspot. It stays joined to
+  Wi-Fi (iOS exposes no way to force a client off the air), but nothing loads.
+  Turn it off to let it back on; blocks clear on reboot and on uninstall. A
+  device that rejoins with a fresh randomised Wi-Fi address is a new device and
+  is not still blocked. This reuses the same mechanism as the per-device limit.
+- **Upload and download, split out.** Every device's own page now shows
+  Downloaded, Uploaded and Total for the period, and the usage pane shows the
+  same split for the hotspot as a whole. The daemon's per-client tap counts each
+  direction separately; the totals are unchanged. For a data cap only the Total
+  matters — carriers bill both directions together — but the split shows what a
+  device is actually doing.
+- **Clearer device identity.** A device with no name of its own is labelled
+  "Private Address" (a randomised MAC) rather than shown as a bare MAC, and its
+  page now always lists both its IP and MAC address under an Identity section.
+
 **0.6.9**
 - Now installs and runs on iOS 18. The crash that made earlier builds unsafe
   there was the arm64e linker marker fixed in 0.6.7, so the install block is

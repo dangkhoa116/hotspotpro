@@ -30,6 +30,8 @@ static void HPBeginNewPeriod(NSMutableDictionary *state, NSDate *now, NSInteger 
     }
 
     state[HPStTotalBytesKey]  = @0;
+    state[HPStUploadBytesKey]   = @0;
+    state[HPStDownloadBytesKey] = @0;
     state[HPStPeriodStartKey] = now;
     state[HPStNextResetKey]   = HPNextResetDate(now, resetDay);
     state[HPStWarnFiredKey]   = @NO;
@@ -100,7 +102,9 @@ NSDictionary *HPTick(void) {
     NSMutableDictionary *lastRaw = [(state[HPStLastRawKey] ?: @{}) mutableCopy];
     BOOL baselined = [state[HPStBaselinedKey] boolValue];
 
-    uint64_t added = HPAccumulateDelta(lastRaw, ifaces, names, !baselined);
+    uint64_t addedUp = 0, addedDown = 0;
+    uint64_t added = HPAccumulateDeltaSplit(lastRaw, ifaces, names, !baselined,
+                                            &addedUp, &addedDown);
     if (!baselined) {
         // First run ever: record where the counters stand without importing a
         // session that may predate this billing period.
@@ -110,6 +114,10 @@ NSDictionary *HPTick(void) {
 
     uint64_t total = [state[HPStTotalBytesKey] unsignedLongLongValue] + added;
     state[HPStTotalBytesKey] = @(total);
+    state[HPStUploadBytesKey]   =
+        @([state[HPStUploadBytesKey] unsignedLongLongValue] + addedUp);
+    state[HPStDownloadBytesKey] =
+        @([state[HPStDownloadBytesKey] unsignedLongLongValue] + addedDown);
     state[HPStLastRawKey]    = lastRaw;
     state[HPStIfNamesKey]    = names;
 
@@ -133,11 +141,11 @@ NSDictionary *HPTick(void) {
         NSString *mac = dev[HPDevMacKey];
         NSMutableDictionary *entry = [dev mutableCopy];
 
-        // A nickname the user set wins over the DHCP name, which for a client
-        // with a randomised MAC is often missing entirely.
+        // A nickname the user set wins over the DHCP name; a randomised MAC with
+        // no name of its own is labelled "Private Address" rather than shown as
+        // the raw MAC, which read as no name at all.
         NSString *nick = [nicknames isKindOfClass:[NSDictionary class]] ? nicknames[mac] : nil;
-        if (nick.length) entry[HPDevNameKey] = nick;
-        if (!entry[HPDevNameKey]) entry[HPDevNameKey] = mac;
+        entry[HPDevNameKey] = HPDeviceDisplayName(mac, dev[HPDevNameKey], nick);
         if ([presentMacs containsObject:mac]) [devicesNow addObject:entry];
 
         NSMutableDictionary *record = [(seen[mac] ?: @{}) mutableCopy];
@@ -153,29 +161,57 @@ NSDictionary *HPTick(void) {
     // folded in as deltas, exactly like the interface counters: a value that
     // dropped means the daemon restarted and the current figure is the delta.
     NSDictionary<NSString *, NSNumber *> *daemonBytes = HPCopyDaemonDeviceBytes();
-    NSMutableDictionary *lastDevRaw = [(state[HPStLastDevRawKey] ?: @{}) mutableCopy];
+    NSDictionary<NSString *, NSNumber *> *daemonUp    = HPCopyDaemonDeviceUpload();
+    NSDictionary<NSString *, NSNumber *> *daemonDown  = HPCopyDaemonDeviceDownload();
+    NSMutableDictionary *lastDevRaw     = [(state[HPStLastDevRawKey] ?: @{}) mutableCopy];
+    NSMutableDictionary *lastDevRawUp   = [(state[HPStLastDevRawUpKey] ?: @{}) mutableCopy];
+    NSMutableDictionary *lastDevRawDown = [(state[HPStLastDevRawDownKey] ?: @{}) mutableCopy];
     BOOL devBaselined = [state[HPStDevBaselinedKey] boolValue];
 
-    for (NSString *mac in daemonBytes) {
-        uint64_t cur = [daemonBytes[mac] unsignedLongLongValue];
-        uint64_t prev = [lastDevRaw[mac] unsignedLongLongValue];
-        uint64_t delta = 0;
-
-        if (lastDevRaw[mac] && devBaselined) {
-            delta = (cur >= prev) ? (cur - prev) : cur;
-        } else if (!lastDevRaw[mac] && devBaselined) {
-            // A device the daemon started counting after our last sample: all
-            // of its bytes belong to this period.
-            delta = cur;
+    // Delta of one cumulative daemon counter against its own stored baseline.
+    // `newOK` says whether a first sight with no baseline counts in full — true
+    // for a device the daemon began counting after our last sample, false for
+    // the first tick after the directional counters were added, where importing
+    // the whole running figure would double-count a period already tracked by
+    // the total.
+    uint64_t (^devDelta)(NSDictionary *, NSMutableDictionary *, NSString *, BOOL) =
+        ^uint64_t(NSDictionary *cumulative, NSMutableDictionary *baseline,
+                  NSString *mac, BOOL newOK) {
+        uint64_t cur = [cumulative[mac] unsignedLongLongValue];
+        uint64_t out = 0;
+        if (baseline[mac] && devBaselined) {
+            uint64_t prev = [baseline[mac] unsignedLongLongValue];
+            // A value that dropped means the daemon restarted; the figure is the
+            // delta.
+            out = (cur >= prev) ? (cur - prev) : cur;
+        } else if (!baseline[mac] && devBaselined && newOK) {
+            out = cur;
         }
-        lastDevRaw[mac] = @(cur);
+        baseline[mac] = @(cur);
+        return out;
+    };
 
-        if (delta == 0) continue;
+    for (NSString *mac in daemonBytes) {
+        // Captured before devDelta records this tick's baseline: a device with
+        // no total baseline yet is genuinely new, so its directional figures are
+        // all new too.
+        BOOL isNewDevice = (lastDevRaw[mac] == nil);
+
+        uint64_t delta     = devDelta(daemonBytes, lastDevRaw,     mac, isNewDevice);
+        uint64_t deltaUp   = devDelta(daemonUp,    lastDevRawUp,   mac, isNewDevice);
+        uint64_t deltaDown = devDelta(daemonDown,  lastDevRawDown, mac, isNewDevice);
+
+        if (delta == 0 && deltaUp == 0 && deltaDown == 0) continue;
         NSMutableDictionary *record = [(seen[mac] ?: @{}) mutableCopy];
         if (!record[@"first"]) record[@"first"] = now;
         record[@"last"] = now;
         record[@"bytes"] = @([record[@"bytes"] unsignedLongLongValue] + delta);
-        if (!record[@"name"]) record[@"name"] = mac;
+        record[@"up"]    = @([record[@"up"]    unsignedLongLongValue] + deltaUp);
+        record[@"down"]  = @([record[@"down"]  unsignedLongLongValue] + deltaDown);
+        if (!record[@"name"]) {
+            NSString *nick = [nicknames isKindOfClass:[NSDictionary class]] ? nicknames[mac] : nil;
+            record[@"name"] = HPDeviceDisplayName(mac, nil, nick);
+        }
         seen[mac] = record;
     }
 
@@ -184,10 +220,16 @@ NSDictionary *HPTick(void) {
     // longer reports are removed — pruning one it still counts would make its
     // whole running total look like new traffic on the next sample.
     for (NSString *mac in [lastDevRaw.allKeys copy]) {
-        if (!daemonBytes[mac]) [lastDevRaw removeObjectForKey:mac];
+        if (!daemonBytes[mac]) {
+            [lastDevRaw removeObjectForKey:mac];
+            [lastDevRawUp removeObjectForKey:mac];
+            [lastDevRawDown removeObjectForKey:mac];
+        }
     }
 
-    state[HPStLastDevRawKey]  = lastDevRaw;
+    state[HPStLastDevRawKey]     = lastDevRaw;
+    state[HPStLastDevRawUpKey]   = lastDevRawUp;
+    state[HPStLastDevRawDownKey] = lastDevRawDown;
     state[HPStDevBaselinedKey] = @YES;
 
     // Carry each connected device's period total onto its row.
@@ -206,25 +248,42 @@ NSDictionary *HPTick(void) {
     // A device drops off the list the moment it is under its cap again — which
     // is what unblocks it after a reset or a raised limit, with no extra state.
     NSDictionary *deviceLimits = cfg[HPCfgDeviceLimitsKey];
+    NSDictionary *manualBlocks = cfg[HPCfgManualBlocksKey];
     NSMutableArray *blocked = [NSMutableArray array];
     NSMutableArray *newlyBlocked = [NSMutableArray array];
     NSArray *previouslyBlocked = state[HPStBlockedMacsKey] ?: @[];
+
+    // Two independent reasons a device is cut off: it went over its own data
+    // limit, or the user blocked it by hand from its page. They feed the same
+    // reject-route mechanism, but only a limit block raises a popup — a manual
+    // block was the user's own doing and needs no announcing.
+    NSMutableSet<NSString *> *macsToBlock = [NSMutableSet set];
+    NSMutableSet<NSString *> *limitBlocked = [NSMutableSet set];
 
     if ([deviceLimits isKindOfClass:[NSDictionary class]]) {
         for (NSString *mac in deviceLimits) {
             double limitGB = [deviceLimits[mac] doubleValue];
             if (limitGB <= 0) continue;
-
             uint64_t used = [seen[mac][@"bytes"] unsignedLongLongValue];
             if (used < (uint64_t)(limitGB * 1024.0 * 1024.0 * 1024.0)) continue;
+            [macsToBlock addObject:mac];
+            [limitBlocked addObject:mac];
+        }
+    }
+    if ([manualBlocks isKindOfClass:[NSDictionary class]]) {
+        for (NSString *mac in manualBlocks) {
+            if ([manualBlocks[mac] boolValue]) [macsToBlock addObject:mac];
+        }
+    }
 
-            NSString *ip = seen[mac][@"ip"];
-            if (!ip) continue;   // nothing to install a route for
-            [blocked addObject:@{ @"mac" : mac, @"ip" : ip }];
+    for (NSString *mac in macsToBlock) {
+        NSString *ip = seen[mac][@"ip"];
+        if (!ip) continue;   // no address on record yet — nothing to route-block
+        [blocked addObject:@{ @"mac" : mac, @"ip" : ip }];
 
-            if (![previouslyBlocked containsObject:mac]) {
-                [newlyBlocked addObject:seen[mac][@"name"] ?: mac];
-            }
+        // Announce only a device the limit newly cut off, never a manual block.
+        if ([limitBlocked containsObject:mac] && ![previouslyBlocked containsObject:mac]) {
+            [newlyBlocked addObject:seen[mac][@"name"] ?: mac];
         }
     }
 
@@ -326,10 +385,12 @@ NSString *HPStatusReport(void) {
     [s appendFormat:@"\nSeen this period (%lu):\n", (unsigned long)seen.count];
     for (NSString *mac in seen) {
         NSDictionary *d = seen[mac];
-        [s appendFormat:@"  %-24s %-15s %-10s last %@\n",
+        [s appendFormat:@"  %-24s %-15s %-10s (down %@ / up %@) last %@\n",
                         [(d[@"name"] ?: mac) UTF8String],
                         [(d[@"ip"] ?: @"?") UTF8String],
                         [HPFormatBytes([d[@"bytes"] unsignedLongLongValue]) UTF8String],
+                        HPFormatBytes([d[@"down"] unsignedLongLongValue]),
+                        HPFormatBytes([d[@"up"] unsignedLongLongValue]),
                         d[@"last"] ? [fmt stringFromDate:d[@"last"]] : @"?"];
     }
 

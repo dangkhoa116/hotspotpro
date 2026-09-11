@@ -194,6 +194,17 @@ uint64_t HPAccumulateDelta(NSMutableDictionary *last,
                            NSArray<NSString *> *names,
                            BOOL baselineOnly);
 
+/// As HPAccumulateDelta, but also reports the split. `*addedUp` receives the
+/// bytes the clients SENT (ap1 ibytes: client -> internet) and `*addedDown` the
+/// bytes they RECEIVED (ap1 obytes: internet -> client); the return value is
+/// their sum, identical to HPAccumulateDelta. Either out-pointer may be NULL.
+uint64_t HPAccumulateDeltaSplit(NSMutableDictionary *last,
+                                NSArray<NSDictionary *> *ifaces,
+                                NSArray<NSString *> *names,
+                                BOOL baselineOnly,
+                                uint64_t *addedUp,
+                                uint64_t *addedDown);
+
 #pragma mark - Connected devices
 
 // Keys for ARP entries / leases / joined devices.
@@ -269,6 +280,23 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
 /// daemon last started, so callers must take deltas rather than read them as
 /// per-period figures.
 NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void);
+
+/// The same, split by direction: upload is what the client sent, download is
+/// what it received. Sum to the total above. Empty when the daemon predates the
+/// split (an older state file) or is not running.
+NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceUpload(void);
+NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceDownload(void);
+
+/// Whether a MAC is locally administered — the "private Wi-Fi address" bit iOS,
+/// Android and others set on a randomised MAC. Such an address carries no vendor
+/// and is not stable across reconnects, so it is worth labelling as such rather
+/// than showing as if it identified the hardware.
+BOOL HPMacIsPrivate(NSString *mac);
+
+/// A human label for a device given every name source, in priority order:
+/// a user-set nickname, then the name the device announced over DHCP, then
+/// "Private Address" for a randomised MAC, then a generic fallback. Never nil.
+NSString *HPDeviceDisplayName(NSString *mac, NSString *dhcpName, NSString *nickname);
 
 /// "4.72 GB", "812 MB" — for display.
 NSString *HPFormatBytes(uint64_t bytes);

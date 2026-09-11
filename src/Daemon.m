@@ -71,6 +71,12 @@ static const NSTimeInterval kFlushInterval = 10.0;
 #pragma mark - State
 
 static NSMutableDictionary<NSString *, NSNumber *> *gBytesByMac;
+// The same totals split by direction. Upload is what the client SENT (a frame
+// whose source is the client); download is what it RECEIVED. They sum to
+// gBytesByMac, which is kept as-is so the per-device limit logic and older
+// readers are untouched.
+static NSMutableDictionary<NSString *, NSNumber *> *gUploadByMac;
+static NSMutableDictionary<NSString *, NSNumber *> *gDownloadByMac;
 static NSMutableDictionary<NSString *, NSDate *> *gLastSeenByMac;
 static NSMutableSet<NSString *> *gTouchedMacs;
 // When the tap now open was opened, or nil while there is none. Published so
@@ -141,6 +147,8 @@ static void HPPruneDevices(void) {
     }
     for (NSString *mac in expired) {
         [gBytesByMac removeObjectForKey:mac];
+        [gUploadByMac removeObjectForKey:mac];
+        [gDownloadByMac removeObjectForKey:mac];
         [gLastSeenByMac removeObjectForKey:mac];
     }
 
@@ -158,6 +166,8 @@ static void HPPruneDevices(void) {
     NSUInteger excess = gBytesByMac.count - kMaxDevices;
     for (NSUInteger i = 0; i < excess && i < byAge.count; i++) {
         [gBytesByMac removeObjectForKey:byAge[i]];
+        [gUploadByMac removeObjectForKey:byAge[i]];
+        [gDownloadByMac removeObjectForKey:byAge[i]];
         [gLastSeenByMac removeObjectForKey:byAge[i]];
     }
     HPDaemonLog(@"capped device table to %lu entries", (unsigned long)gBytesByMac.count);
@@ -176,6 +186,8 @@ static void HPFlushCounters(void) {
         NSString *tmp = [gDevicesPath stringByAppendingPathExtension:@"tmp"];
         NSMutableDictionary *payload = [@{
             @"bytesByMac"   : gBytesByMac,
+            @"uploadByMac"  : gUploadByMac,
+            @"downloadByMac": gDownloadByMac,
             @"lastSeenByMac": gLastSeenByMac,
             @"updated"      : [NSDate date],
         } mutableCopy];
@@ -485,6 +497,11 @@ static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
                 if (fromClient || !isArp) {
                     uint64_t prev = [gBytesByMac[client] unsignedLongLongValue];
                     gBytesByMac[client] = @(prev + bh->bh_datalen);
+                    // A frame the client sent is its upload; one sent toward it
+                    // is its download. The two sum back to gBytesByMac.
+                    NSMutableDictionary *dir = fromClient ? gUploadByMac : gDownloadByMac;
+                    uint64_t prevDir = [dir[client] unsignedLongLongValue];
+                    dir[client] = @(prevDir + bh->bh_datalen);
                 }
                 // Bytes are counted in both directions; presence is not. Only a
                 // frame the client SENT is evidence that it is here — a frame
@@ -505,6 +522,8 @@ static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         gBytesByMac = [NSMutableDictionary dictionary];
+        gUploadByMac = [NSMutableDictionary dictionary];
+        gDownloadByMac = [NSMutableDictionary dictionary];
         gLastSeenByMac = [NSMutableDictionary dictionary];
         gTouchedMacs = [NSMutableSet set];
         gInstalledBlocks = [NSMutableDictionary dictionary];
@@ -524,6 +543,14 @@ int main(int argc, char *argv[]) {
         NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:gDevicesPath];
         if ([existing[@"bytesByMac"] isKindOfClass:[NSDictionary class]]) {
             [gBytesByMac addEntriesFromDictionary:existing[@"bytesByMac"]];
+            // Directional counters were added in 0.7.0; an older file has none,
+            // in which case they simply start fresh and re-accumulate.
+            if ([existing[@"uploadByMac"] isKindOfClass:[NSDictionary class]]) {
+                [gUploadByMac addEntriesFromDictionary:existing[@"uploadByMac"]];
+            }
+            if ([existing[@"downloadByMac"] isKindOfClass:[NSDictionary class]]) {
+                [gDownloadByMac addEntriesFromDictionary:existing[@"downloadByMac"]];
+            }
             if ([existing[@"lastSeenByMac"] isKindOfClass:[NSDictionary class]]) {
                 [gLastSeenByMac addEntriesFromDictionary:existing[@"lastSeenByMac"]];
             }

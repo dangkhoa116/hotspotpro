@@ -107,6 +107,16 @@ static HPSettingsHelper *gHelper;
     return HPFormatBytes([state[HPStTotalBytesKey] unsignedLongLongValue]);
 }
 
+- (id)downloadedValue:(PSSpecifier *)spec {
+    NSDictionary *state = HPStateLoad();
+    return HPFormatBytes([state[HPStDownloadBytesKey] unsignedLongLongValue]);
+}
+
+- (id)uploadedValue:(PSSpecifier *)spec {
+    NSDictionary *state = HPStateLoad();
+    return HPFormatBytes([state[HPStUploadBytesKey] unsignedLongLongValue]);
+}
+
 - (id)remainingValue:(PSSpecifier *)spec {
     NSDictionary *state = HPStateLoad();
     double limitGB = [HPConfig()[HPCfgLimitGBKey] doubleValue];
@@ -212,10 +222,18 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     NSString *mac = [spec propertyForKey:@"hpMac"];
     if (!mac.length) return ip;
 
-    NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSDictionary *state = HPStateLoad();
+    NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
     uint64_t bytes = [seen[mac][@"bytes"] unsignedLongLongValue];
-    if (bytes == 0) return ip;
-    return [NSString stringWithFormat:@"%@ · %@", HPFormatBytes(bytes), ip];
+    NSString *base = (bytes == 0) ? ip
+                                  : [NSString stringWithFormat:@"%@ · %@",
+                                              HPFormatBytes(bytes), ip];
+    // A blocked device says so right in the list, so it need not be opened to
+    // confirm the cut-off is in place.
+    if ([(state[HPStBlockedMacsKey] ?: @[]) containsObject:mac]) {
+        return [base stringByAppendingString:@" · blocked"];
+    }
+    return base;
 }
 
 - (id)seenValue:(PSSpecifier *)spec {
@@ -345,8 +363,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     if (![nicknames isKindOfClass:[NSDictionary class]]) nicknames = @{};
     for (NSDictionary *d in HPLiveConnectedDevices()) {
         NSString *mac = d[HPDevMacKey] ?: @"";
-        NSString *shown = [nicknames[mac] length] ? nicknames[mac]
-                                                  : (d[HPDevNameKey] ?: @"");
+        NSString *shown = HPDeviceDisplayName(mac, d[HPDevNameKey], nicknames[mac]);
         [sig appendFormat:@"%@=%@,", mac, shown];
     }
     [sig appendString:@"|"];
@@ -356,8 +373,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
     for (NSString *mac in [seen.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
         if ([seen[mac][@"bytes"] unsignedLongLongValue] == 0) continue;
-        NSString *shown = [nicknames[mac] length] ? nicknames[mac]
-                                                  : (seen[mac][@"name"] ?: mac);
+        NSString *shown = HPDeviceDisplayName(mac, seen[mac][@"name"], nicknames[mac]);
         [sig appendFormat:@"%@=%@,", mac, shown];
     }
     return sig;
@@ -369,6 +385,10 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     NSDictionary *state = HPStateLoad();
     NSMutableString *sig = [NSMutableString string];
     [sig appendFormat:@"%@|%@|", state[HPStTotalBytesKey], state[HPStIfNamesKey]];
+    // Blocking a device changes no byte total, so its row would not otherwise
+    // refresh to show (or drop) the "blocked" marker.
+    [sig appendFormat:@"b:%@|",
+                      [(state[HPStBlockedMacsKey] ?: @[]) componentsJoinedByString:@","]];
 
     // The status row is computed live, so its inputs belong in the signature —
     // otherwise switching the hotspot on would not refresh the row until some
@@ -537,6 +557,8 @@ static NSArray *HPBuildBodySpecifiers(void) {
     // --- usage ------------------------------------------------------------
     [specs addObject:HPGroup(@"THIS PERIOD", nil)];
     [specs addObject:HPValueRow(@"Used", @selector(usedValue:))];
+    [specs addObject:HPValueRow(@"Downloaded", @selector(downloadedValue:))];
+    [specs addObject:HPValueRow(@"Uploaded", @selector(uploadedValue:))];
     [specs addObject:HPValueRow(@"Remaining", @selector(remainingValue:))];
     [specs addObject:HPValueRow(@"Resets On", @selector(resetsValue:))];
     [specs addObject:HPValueRow(@"Hotspot", @selector(statusValue:))];
@@ -652,7 +674,8 @@ static NSArray *HPBuildBodySpecifiers(void) {
     // The nickname is baked into device rows and the "seen this period" record
     // by the collector, so a tick rebuilds them under the new name; do it now
     // rather than waiting for the next sample.
-    self.title = name.length ? name : [self hpMac];
+    NSString *dhcp = HPStateLoad()[HPStDevicesSeenKey][[self hpMac]][@"name"];
+    self.title = HPDeviceDisplayName([self hpMac], dhcp, name.length ? name : nil);
     HPPostTickRequest();
 }
 
@@ -682,20 +705,61 @@ static NSArray *HPBuildBodySpecifiers(void) {
     return HPFormatBytes([seen[[self hpMac]][@"bytes"] unsignedLongLongValue]);
 }
 
+- (id)hpDownValue:(PSSpecifier *)spec {
+    NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    return HPFormatBytes([seen[[self hpMac]][@"down"] unsignedLongLongValue]);
+}
+
+- (id)hpUpValue:(PSSpecifier *)spec {
+    NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    return HPFormatBytes([seen[[self hpMac]][@"up"] unsignedLongLongValue]);
+}
+
+- (id)hpMacValue:(PSSpecifier *)spec {
+    return [self hpMac];
+}
+
+- (id)hpBlockedValue:(PSSpecifier *)spec {
+    NSDictionary *blocks = HPConfig()[HPCfgManualBlocksKey];
+    BOOL on = [blocks isKindOfClass:[NSDictionary class]] &&
+              [blocks[[self hpMac]] boolValue];
+    return @(on);
+}
+
+- (void)setHpBlocked:(id)value specifier:(PSSpecifier *)spec {
+    NSMutableDictionary *cfg =
+        [([NSDictionary dictionaryWithContentsOfFile:HPConfigPath()] ?: @{}) mutableCopy];
+    NSMutableDictionary *blocks = [(cfg[HPCfgManualBlocksKey] ?: @{}) mutableCopy];
+
+    if ([value boolValue]) blocks[[self hpMac]] = @YES;
+    else                   [blocks removeObjectForKey:[self hpMac]];   // let it back on
+
+    cfg[HPCfgManualBlocksKey] = blocks;
+    [cfg writeToFile:HPConfigPath() atomically:YES];
+
+    // The daemon is the only thing that can install the reject route, and it
+    // reads the blocklist the collector writes — so wake a tick now rather than
+    // waiting up to 10s, and the cut-off (or release) takes effect at once.
+    HPPostTickRequest();
+}
+
 - (id)hpStatusValue:(PSSpecifier *)spec {
     NSString *mac = [self hpMac];
     BOOL wantBlocked = [(HPStateLoad()[HPStBlockedMacsKey] ?: @[]) containsObject:mac];
+    BOOL manual = [HPConfig()[HPCfgManualBlocksKey][mac] boolValue];
 
     if (wantBlocked) {
         // "Blocked" is a claim about the routing table, and only the daemon
         // touches that. Say it is blocked only when the daemon confirms the
         // route is in and its heartbeat is recent; otherwise be honest that the
-        // device is over its limit but still has a working connection, which is
-        // what a dead or route-less daemon leaves behind.
+        // device still has a working connection, which is what a dead or
+        // route-less daemon leaves behind.
         BOOL enforced = [HPDaemonBlockedMacs() containsObject:mac];
         NSDate *flush = HPDaemonLastFlush();
         BOOL daemonAlive = flush && [[NSDate date] timeIntervalSinceDate:flush] <= 60.0;
-        if (enforced && daemonAlive) return @"Blocked — over its limit";
+        if (enforced && daemonAlive) {
+            return manual ? @"Blocked — cut off by you" : @"Blocked — over its limit";
+        }
         // Not actually cut off. Name why, from the daemon's own breadcrumb, so
         // this is a lead rather than a dead end.
         NSString *state = HPCopyDaemonStatus()[@"state"];
@@ -703,11 +767,12 @@ static NSArray *HPBuildBodySpecifiers(void) {
         if ([state isEqualToString:@"gated-ios18"])   why = @"unsupported on iOS 18";
         else if ([state isEqualToString:@"tracking-off"]) why = @"tracking is off";
         else if ([state isEqualToString:@"no-bpf"])   why = @"helper can't capture";
-        return [NSString stringWithFormat:@"Over limit — not enforced (%@)", why];
+        return [NSString stringWithFormat:@"%@ — not enforced (%@)",
+                manual ? @"Blocked" : @"Over limit", why];
     }
 
     double limit = [HPConfig()[HPCfgDeviceLimitsKey][mac] doubleValue];
-    return limit > 0 ? @"Allowed" : @"No limit set";
+    return limit > 0 ? @"Allowed" : @"Not blocked";
 }
 
 - (id)hpAddressValue:(PSSpecifier *)spec {
@@ -747,17 +812,27 @@ static NSArray *HPBuildBodySpecifiers(void) {
     [specs addObject:name];
 
     [specs addObject:HPGroup(@"THIS PERIOD", nil)];
-    PSSpecifier *used = [PSSpecifier preferenceSpecifierNamed:@"Used"
-                                                       target:self
-                                                          set:NULL
-                                                          get:@selector(hpUsedValue:)
-                                                       detail:nil
-                                                         cell:PSTitleValueCell
-                                                         edit:nil];
-    [used setProperty:@NO forKey:@"enabled"];
-    [specs addObject:used];
+    // Downloaded (what the device received) and Uploaded (what it sent) sum to
+    // Total. For a data cap only the Total matters — carriers bill both
+    // directions together — but the split shows at a glance what a device is
+    // actually doing.
+    NSArray<NSString *> *usageTitles = @[ @"Total", @"Downloaded", @"Uploaded" ];
+    SEL usageGetters[] = { @selector(hpUsedValue:), @selector(hpDownValue:),
+                           @selector(hpUpValue:) };
+    for (NSUInteger i = 0; i < usageTitles.count; i++) {
+        PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:usageTitles[i]
+                                                          target:self
+                                                             set:NULL
+                                                             get:usageGetters[i]
+                                                          detail:nil
+                                                            cell:PSTitleValueCell
+                                                            edit:nil];
+        [row setProperty:@NO forKey:@"enabled"];
+        [specs addObject:row];
+    }
 
-    PSSpecifier *address = [PSSpecifier preferenceSpecifierNamed:@"Address"
+    [specs addObject:HPGroup(@"IDENTITY", nil)];
+    PSSpecifier *address = [PSSpecifier preferenceSpecifierNamed:@"IP Address"
                                                           target:self
                                                              set:NULL
                                                              get:@selector(hpAddressValue:)
@@ -767,6 +842,19 @@ static NSArray *HPBuildBodySpecifiers(void) {
     [address setProperty:@NO forKey:@"enabled"];
     [specs addObject:address];
 
+    // Always shown: for a device with no name of its own, the MAC is the only
+    // thing that identifies it — and it is what a router's own client list shows.
+    PSSpecifier *mac = [PSSpecifier preferenceSpecifierNamed:@"MAC Address"
+                                                      target:self
+                                                         set:NULL
+                                                         get:@selector(hpMacValue:)
+                                                      detail:nil
+                                                        cell:PSTitleValueCell
+                                                        edit:nil];
+    [mac setProperty:@NO forKey:@"enabled"];
+    [specs addObject:mac];
+
+    [specs addObject:HPGroup(@"STATUS", nil)];
     PSSpecifier *status = [PSSpecifier preferenceSpecifierNamed:@"Status"
                                                          target:self
                                                             set:NULL
@@ -776,6 +864,21 @@ static NSArray *HPBuildBodySpecifiers(void) {
                                                            edit:nil];
     [status setProperty:@NO forKey:@"enabled"];
     [specs addObject:status];
+
+    [specs addObject:HPGroup(@"ACCESS",
+                             @"Blocking cuts this device off from the internet "
+                              "through your hotspot. It stays joined to Wi-Fi, but "
+                              "nothing loads. Turn it off to let it back on. A "
+                              "device that rejoins with a new random Wi-Fi address "
+                              "is a different device and is not still blocked.")];
+    PSSpecifier *block = [PSSpecifier preferenceSpecifierNamed:@"Block from Hotspot"
+                                                        target:self
+                                                           set:@selector(setHpBlocked:specifier:)
+                                                           get:@selector(hpBlockedValue:)
+                                                        detail:nil
+                                                          cell:PSSwitchCell
+                                                          edit:nil];
+    [specs addObject:block];
 
     [specs addObject:HPGroup(@"DEVICE LIMIT",
                              @"When this device passes its limit, the hotspot stops "
@@ -834,7 +937,7 @@ static NSArray *HPBuildBodySpecifiers(void) {
         NSString *nick = [nicknames isKindOfClass:[NSDictionary class]]
                              ? nicknames[[self hpMac]] : nil;
         NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
-        self.title = nick.length ? nick : (seen[[self hpMac]][@"name"] ?: [self hpMac]);
+        self.title = HPDeviceDisplayName([self hpMac], seen[[self hpMac]][@"name"], nick);
     } @catch (NSException *e) {}
 }
 
@@ -858,7 +961,7 @@ static NSArray *HPBuildDeviceRows(void) {
 
     for (NSDictionary *dev in devices) {
         NSString *nick = nicknames[dev[HPDevMacKey]];
-        NSString *shown = nick.length ? nick : (dev[HPDevNameKey] ?: @"Device");
+        NSString *shown = HPDeviceDisplayName(dev[HPDevMacKey], dev[HPDevNameKey], nick);
         // Built with a getter like every other value row, rather than a static
         // "value" property, which a PSTitleValueCell does not reliably display.
         PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:shown
@@ -902,7 +1005,7 @@ static NSArray *HPBuildDeviceRows(void) {
     for (NSString *mac in offline) {
         NSDictionary *record = seen[mac];
         NSString *nick = nicknames[mac];
-        NSString *shown = nick.length ? nick : (record[@"name"] ?: mac);
+        NSString *shown = HPDeviceDisplayName(mac, record[@"name"], nick);
 
         PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:shown
                                                           target:helper

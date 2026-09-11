@@ -24,6 +24,7 @@ extern NSString *const HPCfgResetDayKey;    // int 1-31, default 1
 extern NSString *const HPCfgWarnPercentKey; // int,    default 80
 extern NSString *const HPCfgNicknamesKey;   // dict mac -> user-set name
 extern NSString *const HPCfgDeviceLimitsKey;// dict mac -> GB (double), per device
+extern NSString *const HPCfgManualBlocksKey;// dict mac -> BOOL, cut off by hand
 
 /// Devices the collector has decided are over their own limit, written for the
 /// root daemon to enforce. The daemon is the only thing that can install a
@@ -49,11 +50,15 @@ void HPPostTickRequest(void);
 #pragma mark - State
 
 extern NSString *const HPStTotalBytesKey;   // unsigned long long, this period
+extern NSString *const HPStUploadBytesKey;   // unsigned long long, client -> internet
+extern NSString *const HPStDownloadBytesKey; // unsigned long long, internet -> client
 extern NSString *const HPStPeriodStartKey;  // NSDate
 extern NSString *const HPStNextResetKey;    // NSDate
 extern NSString *const HPStLastRawKey;      // dict ifname -> {i, o}
 extern NSString *const HPStBaselinedKey;    // BOOL, first run has happened
 extern NSString *const HPStLastDevRawKey;   // dict mac -> cumulative daemon bytes
+extern NSString *const HPStLastDevRawUpKey;  // dict mac -> cumulative daemon upload
+extern NSString *const HPStLastDevRawDownKey;// dict mac -> cumulative daemon download
 extern NSString *const HPStDevBaselinedKey; // BOOL, daemon counters baselined
 extern NSString *const HPStWarnFiredKey;    // BOOL, warning shown this period
 extern NSString *const HPStLimitFiredKey;   // BOOL, limit alert shown this period
