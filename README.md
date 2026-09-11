@@ -80,9 +80,10 @@ docs/      the generated APT repo, served by GitHub Pages
   Hotspot* switch: the root daemon installs a host reject route for that client,
   so it can no longer reach the internet through your hotspot. It stays joined to
   Wi-Fi (iOS exposes no way to force a client off the air), but nothing loads.
-  Turn it off to let it back on; blocks clear on reboot and on uninstall. A
-  device that rejoins with a fresh randomised Wi-Fi address is a new device and
-  is not still blocked. This reuses the same mechanism as the per-device limit.
+  Turn it off to let it back on — the block stays in place, across reboots
+  included, until you do, and is cleared on uninstall. A device that rejoins
+  with a fresh randomised Wi-Fi address is a new device and is not still
+  blocked. This reuses the same mechanism as the per-device limit.
 - **Upload and download, split out.** Every device's own page now shows
   Downloaded, Uploaded and Total for the period, and the usage pane shows the
   same split for the hotspot as a whole. The daemon's per-client tap counts each
