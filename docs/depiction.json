@@ -78,6 +78,11 @@
       "views": [
         {
           "class": "DepictionMarkdownView",
+          "markdown": "**0.7.0**\n• Block a device from your hotspot with a switch on its page — it stays on Wi-Fi but nothing loads, until you turn the block off\n• Usage split into Downloaded, Uploaded and Total, per device and for the hotspot overall\n• A device with no name of its own shows as \"Private Address\", and every device page lists its IP and MAC"
+        },
+        { "class": "DepictionSeparatorView" },
+        {
+          "class": "DepictionMarkdownView",
           "markdown": "**0.6.9**\n• Now installs and runs on iOS 18 — the crash behind the old block was the arm64e marker fixed in 0.6.7\n• The Buy Me a Beer 🍺 tip row is back, always shown"
         },
         { "class": "DepictionSeparatorView" },
