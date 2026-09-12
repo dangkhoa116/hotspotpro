@@ -1,0 +1,96 @@
+name: Build roothide (macOS)
+
+# Compile-check ONLY the roothide package. Deliberately separate from
+# build.yml, for two reasons:
+#
+#   1. roothide needs a different toolchain — the roothide fork of Theos, which
+#      is the only one that has the `roothide` package scheme and ships
+#      libroothide (for -lroothide and <roothide.h>). build.yml uses stock Theos.
+#   2. The stable channel does not ship a roothide deb, so this must never gate
+#      master. It runs on demand (workflow_dispatch) and just proves the roothide
+#      scheme still builds after a change to Prefs.m paths, the Makefile, etc.
+#
+# The arm64e ABI note from build.yml applies here too: only Xcode's linker on a
+# macOS runner emits the versioned ptrauth ABI that iOS actually loads.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-roothide:
+    runs-on: macos-14
+    env:
+      THEOS: ${{ github.workspace }}/theos-roothide
+      IOS_SDK: iPhoneOS16.5.sdk        # keep in step with build.yml
+      HP_TARGET: iphone:clang:16.5:14.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: brew install ldid dpkg
+
+      - name: Cache roothide Theos
+        id: theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}
+          key: theos-roothide-${{ env.IOS_SDK }}-v1
+
+      - name: Install roothide Theos
+        if: steps.theos.outputs.cache-hit != 'true'
+        run: |
+          # The roothide fork carries the roothide package scheme and libroothide.
+          git clone --recursive https://github.com/roothide/theos.git "$THEOS"
+          # One SDK, from the stock sdks repo — roothide builds against the normal
+          # iPhoneOS SDK; the fork only changes packaging, not the SDK.
+          mkdir -p "$THEOS/sdks"
+          git clone -n --depth 1 --filter=tree:0 https://github.com/theos/sdks.git /tmp/sdks
+          cd /tmp/sdks
+          git sparse-checkout set --no-cone "$IOS_SDK"
+          git checkout
+          mv "/tmp/sdks/$IOS_SDK" "$THEOS/sdks/$IOS_SDK"
+
+      - name: Check the toolchain and SDK
+        run: |
+          xcodebuild -version
+          ls -la "$THEOS/sdks"
+          test -d "$THEOS/sdks/$IOS_SDK/usr/include" \
+            || { echo "::error::$IOS_SDK is not laid out correctly under $THEOS/sdks"; exit 1; }
+          # libroothide is what -lroothide and <roothide.h> resolve against; if the
+          # fork did not vendor it, say so up front rather than in a link error.
+          ls "$THEOS"/vendor/lib/libroothide* "$THEOS"/vendor/include/roothide.h 2>/dev/null \
+            || echo "::warning::could not spot libroothide in \$THEOS/vendor — if the build fails to find -lroothide/<roothide.h>, that is why"
+
+      - name: Configure tip jar
+        env:
+          DONATE_URL: ${{ secrets.DONATE_URL }}
+        run: |
+          if [ -n "$DONATE_URL" ]; then
+            printf '%s' "$DONATE_URL" > donate-url.txt
+            echo "tip jar configured"
+          else
+            echo "no DONATE_URL secret set - the tip-jar row will be hidden"
+          fi
+
+      - name: Build the roothide package
+        run: bash tools/build-roothide.sh
+
+      - name: Surface the build log
+        if: failure()
+        run: |
+          LOG=build-roothide.log
+          [ -f "$LOG" ] || { echo "::error::build-roothide.log was never written"; exit 0; }
+          echo "::group::build-roothide.log (tail)"
+          tail -120 "$LOG"
+          echo "::endgroup::"
+          grep -i -E 'error:|fatal|\*\*\*|^ld:|not found|-lroothide|roothide.h' "$LOG" | tail -10 \
+            | sed 's/%/%25/g' | while IFS= read -r l; do echo "::error::$l"; done
+
+      - name: Upload the roothide deb
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-roothide
+          path: release-roothide/*.deb
+          if-no-files-found: warn
