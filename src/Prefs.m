@@ -1,6 +1,17 @@
 #import "Prefs.h"
 #include <notify.h>
 
+// roothide keeps the whole jailbreak filesystem inside a directory whose name is
+// randomised on every userspace reboot, so its paths are resolved at each call
+// rather than stored. The other schemes install at a fixed prefix and need no
+// translation.
+#if THEOS_PACKAGE_SCHEME_ROOTHIDE
+#import <roothide.h>
+#define HPJailbreakPath(path) jbroot(path)
+#else
+#define HPJailbreakPath(path) (path)
+#endif
+
 NSString *const HPCfgEnabledKey     = @"enabled";
 NSString *const HPCfgLimitGBKey     = @"limitGB";
 NSString *const HPCfgResetDayKey    = @"resetDay";
@@ -40,19 +51,31 @@ NSString *const HPStResetRequestKey = @"resetRequested";
 #pragma mark - Paths
 
 NSString *HPConfigPath(void) {
-    return @"/var/mobile/Library/Preferences/com.dangkhoa.hotspotpro.plist";
+    return HPJailbreakPath(@"/var/mobile/Library/Preferences/com.dangkhoa.hotspotpro.plist");
 }
 
 NSString *HPStatePath(void) {
-    return @"/var/mobile/Library/Caches/hotspotpro-state.plist";
+    return HPJailbreakPath(@"/var/mobile/Library/Caches/hotspotpro-state.plist");
 }
 
 NSString *HPLogPath(void) {
-    return @"/var/mobile/Library/Caches/hotspotpro.log";
+    return HPJailbreakPath(@"/var/mobile/Library/Caches/hotspotpro.log");
 }
 
 NSString *HPBlocklistPath(void) {
-    return @"/var/mobile/Library/Caches/hotspotpro-blocklist.plist";
+    return HPJailbreakPath(@"/var/mobile/Library/Caches/hotspotpro-blocklist.plist");
+}
+
+NSString *HPDevicesPath(void) {
+    return HPJailbreakPath(@"/var/mobile/Library/Caches/hotspotpro-devices.plist");
+}
+
+NSString *HPDaemonStatusPath(void) {
+    return HPJailbreakPath(@"/var/mobile/Library/Caches/hotspotpro-daemon.plist");
+}
+
+NSString *HPInstalledBlocksPath(void) {
+    return HPJailbreakPath(@"/var/mobile/Library/Caches/hotspotpro-installed.plist");
 }
 
 #pragma mark - Config

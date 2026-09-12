@@ -15,6 +15,12 @@ NSString *HPConfigPath(void);
 NSString *HPStatePath(void);
 NSString *HPLogPath(void);
 
+// The daemon's three files, named here rather than at each use so there is one
+// place to translate them for the package scheme.
+NSString *HPDevicesPath(void);
+NSString *HPDaemonStatusPath(void);
+NSString *HPInstalledBlocksPath(void);
+
 #pragma mark - Config
 
 // Config keys, all optional — HPConfig() applies defaults.

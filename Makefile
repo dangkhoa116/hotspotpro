@@ -21,15 +21,32 @@ TARGET := iphone:clang:latest:14.0
 # users' phones.
 ARCHS = arm64 arm64e
 
-# Rootless (/var/jb) unless HP_ROOTFUL=1 asks for a rootful package.
+# Rootless (/var/jb) unless HP_ROOTFUL=1 or HP_ROOTHIDE=1 asks for another one.
 # Deliberately not `?=`: with that, merely unsetting THEOS_PACKAGE_SCHEME still
 # left the default in place, so the "rootful" build quietly produced a second
 # rootless package that overwrote the first.
-ifneq ($(HP_ROOTFUL),1)
+ifeq ($(HP_ROOTHIDE),1)
+THEOS_PACKAGE_SCHEME = roothide
+else ifneq ($(HP_ROOTFUL),1)
 THEOS_PACKAGE_SCHEME = rootless
 endif
 
 include $(THEOS)/makefiles/common.mk
+
+# roothide installs under a directory whose name changes on every userspace
+# reboot, so the paths in Prefs.m are resolved through jbroot() at call time.
+# That lives in libroothide, which every product here needs: all four read or
+# write the same files. The roothide fork of Theos is required to build this.
+ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
+HP_SCHEME_LDFLAGS = -lroothide
+# Ad-hoc signing with no entitlements leaves the two tools unable to load
+# libroothide: dyld finds it and AMFI refuses it, errno 1, and launchd then
+# respawns the daemon every ThrottleInterval forever. platform-application is
+# what the bootstrap's own daemons carry, and it is what lifts that.
+HP_TOOL_CODESIGN = -Sroothide-entitlements.plist
+else
+HP_TOOL_CODESIGN = -S
+endif
 
 # TWO tweak dylibs, not one, and the split is deliberate.
 #
@@ -47,6 +64,7 @@ TWEAK_NAME = HotspotPro HotspotProSettings
 HotspotPro_FILES = SpringBoard.x Collector.m Prefs.m Tracker.m
 HotspotPro_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 HotspotPro_FRAMEWORKS = UIKit Foundation
+HotspotPro_LDFLAGS = $(HP_SCHEME_LDFLAGS)
 
 # Preferences: the UI. Filter in HotspotProSettings.plist. This is the only
 # product that may link Preferences.framework, where PSSpecifier and
@@ -61,6 +79,7 @@ HotspotProSettings_FILES = Settings.x Collector.m Prefs.m Tracker.m
 HotspotProSettings_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 HotspotProSettings_FRAMEWORKS = UIKit Foundation
 HotspotProSettings_PRIVATE_FRAMEWORKS = Preferences
+HotspotProSettings_LDFLAGS = $(HP_SCHEME_LDFLAGS)
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
@@ -69,14 +88,22 @@ TOOL_NAME = hotspotpro hotspotprod
 hotspotpro_FILES = main.m Collector.m Prefs.m Tracker.m
 hotspotpro_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 hotspotpro_FRAMEWORKS = Foundation
-hotspotpro_CODESIGN_FLAGS = -S
+hotspotpro_LDFLAGS = $(HP_SCHEME_LDFLAGS)
+hotspotpro_CODESIGN_FLAGS = $(HP_TOOL_CODESIGN)
 
 # The per-device counter. Runs as root from a LaunchDaemon, so it installs to
 # libexec rather than bin — it is not meant to be run by hand.
 hotspotprod_FILES = Daemon.m Collector.m Prefs.m
 hotspotprod_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 hotspotprod_FRAMEWORKS = Foundation
-hotspotprod_CODESIGN_FLAGS = -S
+hotspotprod_LDFLAGS = $(HP_SCHEME_LDFLAGS)
+hotspotprod_CODESIGN_FLAGS = $(HP_TOOL_CODESIGN)
 hotspotprod_INSTALL_PATH = /usr/libexec
 
 include $(THEOS_MAKE_PATH)/tool.mk
+
+# deb.mk reads the architecture out of control with `:=`, and that one names the
+# rootless arch, so this has to come after the include to take effect.
+ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
+THEOS_PACKAGE_ARCH := iphoneos-arm64e
+endif

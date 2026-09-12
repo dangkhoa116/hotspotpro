@@ -426,6 +426,7 @@ NSString *HPNormaliseMac(NSString *raw) {
 }
 
 NSArray<NSDictionary *> *HPCopyDhcpLeases(void) {
+    // iOS writes this one, so it is a real filesystem path under every scheme.
     NSString *path = @"/var/db/dhcpd_leases";
     NSString *text = [NSString stringWithContentsOfFile:path
                                                encoding:NSUTF8StringEncoding
@@ -742,62 +743,53 @@ NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfName
 #pragma mark - Per-device bytes (from the daemon)
 
 NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
     NSDictionary *bytes = file[@"bytesByMac"];
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
 }
 
 NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceUpload(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
     NSDictionary *bytes = file[@"uploadByMac"];
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
 }
 
 NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceDownload(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
     NSDictionary *bytes = file[@"downloadByMac"];
     return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
 }
 
 NSDictionary *HPCopyDaemonStatus(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-daemon.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDaemonStatusPath()];
     return [file isKindOfClass:[NSDictionary class]] ? file : nil;
 }
 
 NSArray<NSString *> *HPDaemonBlockedMacs(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
     NSArray *macs = file[@"installedBlocks"];
     return [macs isKindOfClass:[NSArray class]] ? macs : @[];
 }
 
 BOOL HPDaemonIsProbing(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
     return [file[@"probing"] boolValue];
 }
 
 NSDate *HPDaemonTapSince(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
     NSDate *since = file[@"tapSince"];
     return [since isKindOfClass:[NSDate class]] ? since : nil;
 }
 
 NSDate *HPDaemonLastFlush(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
     NSDate *updated = file[@"updated"];
     return [updated isKindOfClass:[NSDate class]] ? updated : nil;
 }
 
 NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:
-                              @"/var/mobile/Library/Caches/hotspotpro-devices.plist"];
+    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
     NSDictionary *seen = file[@"lastSeenByMac"];
     return [seen isKindOfClass:[NSDictionary class]] ? seen : @{};
 }

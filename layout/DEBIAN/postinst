@@ -3,7 +3,8 @@
 #
 # The LaunchDaemon plist has to name an absolute path to the binary, and that
 # path differs between jailbreak types (/var/jb/usr/libexec on rootless, plain
-# /usr/libexec on rootful). dpkg does not rewrite file contents, so the plist is
+# /usr/libexec on rootful and on roothide, whose maintainer scripts already see
+# the jailbreak root as /). dpkg does not rewrite file contents, so the plist is
 # written here from the prefix that actually exists on this device rather than
 # shipped twice.
 
