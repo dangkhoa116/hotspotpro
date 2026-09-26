@@ -262,6 +262,62 @@ static int HPCommandSelftest(void) {
     t3 += HPAccumulateDelta(fresh, @[ iface(400001000, 361500500) ], names, NO);
     check(@"and counts only what follows", t3, 1500);
 
+    // --- per-device attribution ---------------------------------------------
+    // The hotspot counter says how much, the daemon's tap only who. Pinned
+    // because the tap sits on a bridge that counts forwarded traffic twice, and
+    // reading it as bytes put devices at several times the hotspot total.
+    HPPrint(@"\n=== per-device attribution ===");
+    NSDate *when = [NSDate dateWithTimeIntervalSince1970:1700000000];
+    NSMutableDictionary *owners = [NSMutableDictionary dictionary];
+    uint64_t poolUp = 100, poolDown = 1000;
+    HPAttributeToDevices(owners, @{ @"a" : @300, @"b" : @100 },
+                         @{ @"a" : @3000, @"b" : @1000 }, &poolUp, &poolDown, when);
+    check(@"the bigger mover gets its share of download", [owners[@"a"][@"down"] unsignedLongLongValue], 750);
+    check(@"and the smaller one the rest", [owners[@"b"][@"down"] unsignedLongLongValue], 250);
+    check(@"upload is shared the same way", [owners[@"a"][@"up"] unsignedLongLongValue], 75);
+    check(@"a device's total is its up + down", [owners[@"a"][@"bytes"] unsignedLongLongValue], 825);
+    check(@"a claimed pool is emptied", poolUp + poolDown, 0);
+
+    poolUp = 0; poolDown = 500;
+    HPAttributeToDevices(owners, @{}, @{}, &poolUp, &poolDown, when);
+    check(@"with nobody to give it to, the pool waits", poolDown, 500);
+    check(@"and nobody's figure moves", [owners[@"a"][@"bytes"] unsignedLongLongValue], 825);
+
+    // The upgrade repair, on this period's own figures from a phone that ran
+    // 0.7.0: Used 8.65 GB over a split adding to 7.12, devices summing to 46 GB.
+    HPPrint(@"\n=== repair of earlier figures ===");
+    const uint64_t MB = 1000 * 1000;
+    NSMutableDictionary *old = [@{
+        HPStTotalBytesKey    : @(8650 * MB),
+        HPStUploadBytesKey   : @(432 * MB),
+        HPStDownloadBytesKey : @(6690 * MB),
+        HPStDevicesSeenKey   : @{
+            @"galaxy" : @{ @"bytes" : @(37370 * MB), @"up" : @(1900 * MB), @"down" : @(32050 * MB) },
+            @"ipad"   : @{ @"bytes" : @(4320 * MB) },
+            @"air"    : @{ @"bytes" : @(1770 * MB), @"up" : @(100 * MB), @"down" : @(1670 * MB) },
+            @"quiet"  : @{ @"name" : @"no traffic" },
+        },
+    } mutableCopy];
+    check(@"the repair runs on an upgraded state", HPRepairTotals(old), 1);
+    uint64_t rUp = [old[HPStUploadBytesKey] unsignedLongLongValue];
+    uint64_t rDown = [old[HPStDownloadBytesKey] unsignedLongLongValue];
+    check(@"Used keeps its value", [old[HPStTotalBytesKey] unsignedLongLongValue], 8650 * MB);
+    check(@"and now equals Downloaded + Uploaded", rUp + rDown, 8650 * MB);
+    uint64_t deviceSum = 0;
+    BOOL eachAddsUp = YES;
+    for (NSString *mac in old[HPStDevicesSeenKey]) {
+        NSDictionary *r = old[HPStDevicesSeenKey][mac];
+        uint64_t b = [r[@"bytes"] unsignedLongLongValue];
+        if (b != [r[@"up"] unsignedLongLongValue] + [r[@"down"] unsignedLongLongValue]) eachAddsUp = NO;
+        deviceSum += b;
+    }
+    check(@"every device's Total equals its own split", eachAddsUp, 1);
+    check(@"devices no longer sum past Used", deviceSum, 8650 * MB);
+    check(@"the biggest user stays the biggest",
+          [old[HPStDevicesSeenKey][@"galaxy"][@"bytes"] unsignedLongLongValue] >
+          [old[HPStDevicesSeenKey][@"ipad"][@"bytes"] unsignedLongLongValue], 1);
+    check(@"the repair runs once", HPRepairTotals(old), 0);
+
     HPPrint(@"\n=== period maths ===");
     NSCalendar *cal = [NSCalendar currentCalendar];
     NSDateComponents *c = [NSDateComponents new];

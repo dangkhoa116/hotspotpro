@@ -25,6 +25,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdio.h>
 #include <string.h>
 #include <errno.h>
 
@@ -204,16 +205,20 @@ static void HPFlushCounters(void) {
                                                                   format:NSPropertyListXMLFormat_v1_0
                                                                  options:0
                                                                    error:NULL];
-        if (!data) return;
-        [data writeToFile:tmp atomically:NO];
-
-        NSFileManager *fm = [NSFileManager defaultManager];
-        [fm removeItemAtPath:devicesPath error:NULL];
-        [fm moveItemAtPath:tmp toPath:devicesPath error:NULL];
+        if (!data || ![data writeToFile:tmp atomically:NO]) return;
         // Written by root, read by the tweak inside SpringBoard and Preferences.
-        [fm setAttributes:@{ NSFilePosixPermissions : @0644 }
-             ofItemAtPath:devicesPath
-                    error:NULL];
+        // Set on the temp file, so the file readers find is never briefly 0600.
+        [[NSFileManager defaultManager] setAttributes:@{ NSFilePosixPermissions : @0644 }
+                                         ofItemAtPath:tmp
+                                                error:NULL];
+        // rename(2) replaces the old file in one step. This used to delete the
+        // old file and then move the new one in, and a reader landing between
+        // the two found no file at all — every 10 seconds. The tracker took
+        // that as "no devices", forgot every baseline, and re-imported each
+        // device's whole running figure on the next read.
+        if (rename([tmp fileSystemRepresentation], [devicesPath fileSystemRepresentation]) != 0) {
+            HPDaemonLog(@"flush rename: %s", strerror(errno));
+        }
     } @catch (NSException *e) {
         HPDaemonLog(@"flush failed: %@", e);
     }

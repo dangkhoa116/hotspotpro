@@ -742,22 +742,19 @@ NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfName
 
 #pragma mark - Per-device bytes (from the daemon)
 
-NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void) {
+NSDictionary<NSString *, NSDictionary<NSString *, NSNumber *> *> *HPCopyDaemonCounters(void) {
     NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
+    if (![file isKindOfClass:[NSDictionary class]]) return nil;
     NSDictionary *bytes = file[@"bytesByMac"];
-    return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
-}
+    if (![bytes isKindOfClass:[NSDictionary class]]) return nil;
 
-NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceUpload(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
-    NSDictionary *bytes = file[@"uploadByMac"];
-    return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
-}
-
-NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceDownload(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
-    NSDictionary *bytes = file[@"downloadByMac"];
-    return [bytes isKindOfClass:[NSDictionary class]] ? bytes : @{};
+    NSDictionary *up = file[@"uploadByMac"];
+    NSDictionary *down = file[@"downloadByMac"];
+    return @{
+        @"bytes" : bytes,
+        @"up"    : [up isKindOfClass:[NSDictionary class]] ? up : @{},
+        @"down"  : [down isKindOfClass:[NSDictionary class]] ? down : @{},
+    };
 }
 
 NSDictionary *HPCopyDaemonStatus(void) {

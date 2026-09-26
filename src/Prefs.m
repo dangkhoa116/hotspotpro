@@ -1,5 +1,6 @@
 #import "Prefs.h"
 #include <notify.h>
+#include <stdio.h>
 
 // roothide keeps the whole jailbreak filesystem inside a directory whose name is
 // randomised on every userspace reboot, so its paths are resolved at each call
@@ -47,6 +48,10 @@ NSString *const HPStUpdatedKey      = @"updated";
 NSString *const HPStIfNamesKey      = @"ifNames";
 NSString *const HPStBlockedMacsKey  = @"blockedMacs";
 NSString *const HPStResetRequestKey = @"resetRequested";
+NSString *const HPStPendingUpKey    = @"pendingUp";
+NSString *const HPStPendingDownKey  = @"pendingDown";
+NSString *const HPStPendingSinceKey = @"pendingSince";
+NSString *const HPStSchemaKey       = @"schema";
 
 #pragma mark - Paths
 
@@ -127,10 +132,10 @@ BOOL HPStateSave(NSDictionary *state) {
     if (![data writeToFile:tmp atomically:NO]) return NO;
 
     // rename(2) is atomic within a filesystem: readers see either the old file
-    // or the new one, never a half-written one.
-    NSFileManager *fm = [NSFileManager defaultManager];
-    [fm removeItemAtPath:path error:NULL];
-    return [fm moveItemAtPath:tmp toPath:path error:NULL];
+    // or the new one, never a half-written one — and never no file at all.
+    // Deleting first and then moving left exactly that gap, and the Settings
+    // pane reading in it saw an empty state.
+    return rename([tmp fileSystemRepresentation], [path fileSystemRepresentation]) == 0;
 }
 
 #pragma mark - Period maths

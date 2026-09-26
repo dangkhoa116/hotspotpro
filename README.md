@@ -33,9 +33,10 @@ Only the SpringBoard collector writes the usage totals, so a reset can never
 race a sample. Totals come from `sysctl NET_RT_IFLIST2` (64-bit byte counters);
 device names from the hotspot's own DHCP leases; the connected list from the ARP
 table, with a departure judged over a steady four-minute window so a quiet
-device doesn't flicker offline. Per-device bytes come from a BPF tap that copies
-only each frame's 14-byte Ethernet header, and blocking is a host reject route
-for that client — never outside the hotspot's own subnet.
+device doesn't flicker offline. A BPF tap that copies only each frame's 14-byte
+Ethernet header says which device moved how much, and the period total is shared
+out in those proportions — so devices always add up to Used. Blocking is a host
+reject route for that client — never outside the hotspot's own subnet.
 
 ## Privacy
 
@@ -74,6 +75,23 @@ docs/      the generated APT repo, served by GitHub Pages
 ```
 
 ## Changelog
+
+**0.7.1**
+- **Usage figures that add up.** Per-device totals could run to several times
+  the hotspot's own Used figure. Every 10 seconds the helper briefly deleted the
+  file it writes, and a sample landing in that gap re-counted each device's
+  whole running total as new traffic. The file is now replaced in one step, and
+  an unreadable file is skipped instead of being read as "no devices".
+- **Devices are shares of Used.** Used comes from the Wi-Fi hotspot interface,
+  which was measured to match the cellular uplink. The per-device tap sits on
+  the bridge, which counts forwarded traffic twice, so it now only decides *who*
+  used the data: Used is shared out in the proportions it sees. Devices sum to
+  Used instead of a multiple of it.
+- **Downloaded + Uploaded = Total**, for the hotspot and for every device. Used
+  is now defined as the sum of its two halves.
+- On the first run after updating, this period's figures from 0.7.0 are
+  repaired once: Used keeps its value and gains a matching split, and devices
+  that summed past it are scaled back to their share.
 
 **0.7.0**
 - **Block a device from the hotspot.** Each device's page has a *Block from
