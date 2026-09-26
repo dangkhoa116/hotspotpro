@@ -275,17 +275,21 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
 
 #pragma mark - Helpers
 
-/// Cumulative bytes per client MAC, as written by the hotspotprod daemon.
-/// Empty when the daemon is not running. The values count from whenever the
-/// daemon last started, so callers must take deltas rather than read them as
-/// per-period figures.
-NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceBytes(void);
-
-/// The same, split by direction: upload is what the client sent, download is
-/// what it received. Sum to the total above. Empty when the daemon predates the
-/// split (an older state file) or is not running.
-NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceUpload(void);
-NSDictionary<NSString *, NSNumber *> *HPCopyDaemonDeviceDownload(void);
+/// The daemon's per-client counters, read from ONE snapshot of its file so the
+/// three dictionaries always agree with each other. Keys of the result:
+/// @"bytes", @"up", @"down", each a dict of MAC -> cumulative bytes. Upload is
+/// what the client sent, download what it received; the directional dicts are
+/// empty for a file written before 0.7.0.
+///
+/// The values are cumulative for the life of the daemon's file, so callers take
+/// deltas rather than reading them as per-period figures.
+///
+/// nil when the file could not be read at all. That is NOT the same as "no
+/// devices": a caller that took it for an empty table would forget every
+/// device's baseline, and then import each one's whole running figure as new
+/// traffic on the next read — which is how per-device totals ran to several
+/// times the hotspot's own.
+NSDictionary<NSString *, NSDictionary<NSString *, NSNumber *> *> *HPCopyDaemonCounters(void);
 
 /// Whether a MAC is locally administered — the "private Wi-Fi address" bit iOS,
 /// Android and others set on a randomised MAC. Such an address carries no vendor

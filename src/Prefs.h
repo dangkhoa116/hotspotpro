@@ -77,6 +77,11 @@ extern NSString *const HPStBlockedMacsKey;  // array of MACs over their own limi
 extern NSString *const HPStResetRequestKey; // BOOL, set by the UI, consumed by
                                             // the collector — the UI never
                                             // mutates the totals itself
+extern NSString *const HPStPendingUpKey;    // unsigned long long, measured
+extern NSString *const HPStPendingDownKey;  //   hotspot bytes not yet handed
+                                            //   to a device
+extern NSString *const HPStPendingSinceKey; // NSDate, when that began waiting
+extern NSString *const HPStSchemaKey;       // int, which one-time repairs ran
 
 NSMutableDictionary *HPStateLoad(void);
 
