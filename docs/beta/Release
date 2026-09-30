@@ -7,10 +7,10 @@ Architectures: iphoneos-arm iphoneos-arm64
 Components: main
 Description: HotspotPro pre-release test builds
 MD5Sum:
- 095592424972e567aadf7aa0e0a4142d 1990 Packages
- 2b9efa9e19f6adad3d3e3449de496f58 666 Packages.gz
- 1131a842ffed63fdbbdaf6d5ad7a6695 824 Packages.bz2
+ b6fbc163f247b3f6a7611d5c78c5757c 1990 Packages
+ 85a054fc3b31438364bcd52ece568388 666 Packages.gz
+ 4a363059f33355f11215e01b42cfa61a 829 Packages.bz2
 SHA256:
- 24175f31d2998e064fb6322a6e2b181e7b2fc06a516a1f90a977f0e636d0b07c 1990 Packages
- 4ce4ceaf913b74a27b0a2c0a92ffb40b3b4578689c70473ef9018a40f2343e54 666 Packages.gz
- c1d15079352cd1d2ddac0c6c930994bce4e051488f9fb15f1bddcbf6283b4561 824 Packages.bz2
+ 92579c0ff2259b9fe2375f3aeda429d7eed82fcb5fc24fe102c048e3eed64869 1990 Packages
+ 107ff4329e42024d8a906ae1c02fbe1f24c049210b4fae24c82e08cc44fb0841 666 Packages.gz
+ 89030cce72d0a7e39d2390a0bef8ad6245e7911b35325040ef79ae2accccd2a3 829 Packages.bz2
