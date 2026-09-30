@@ -89,8 +89,23 @@ docs/      the generated APT repo, served by GitHub Pages
   and for each device; tap a bar to read its day. The days add up to Used.
 - **Live speed.** Download and upload speed for the hotspot, and for each
   device that is moving data, right in the device list.
+- **Nothing runs in the background while nobody is connected.** With the
+  hotspot off, or on with no devices, neither half of HotspotPro runs a timer:
+  they sleep until the hotspot comes up, a device joins or speaks, or you open
+  Settings. Before, SpringBoard checked every 10 seconds forever, and the helper
+  every 15 to 60.
+- **Much less work while sharing.** The helper no longer re-reads its settings
+  and rewrites a file on every pass — several times a second at full speed —
+  or builds text for every packet it counts; the usage file is written every
+  30 seconds instead of every 10 (at once while Settings is open), in a smaller
+  binary form; and an idle connected device no longer causes a write at all.
+- Light traffic is attributed within seconds. A device only browsing could
+  wait minutes for its share, and sometimes lose it, because the helper read
+  its capture buffer only once it was full.
 - Blocking takes effect within a second or two: the helper now wakes the
   moment the blocklist changes instead of on its next pass.
+- An alert that was dismissed without a button being tapped no longer holds
+  up every alert after it.
 - A block is only ever placed on the address a device holds right now, never
   one it held earlier that may since belong to somebody else.
 

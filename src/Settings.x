@@ -316,6 +316,11 @@ static HPSettingsHelper *gHelper;
 }
 - (void)setEnabledValue:(id)value specifier:(PSSpecifier *)spec {
     [self writeConfigValue:@([value boolValue]) forKey:HPCfgEnabledKey];
+    // The daemon sleeps with no timer while tracking is off or the hotspot is
+    // idle; this is what tells it to look again. And a sample, so the
+    // collector notices too.
+    notify_post(HPBlocklistChangedNotification);
+    HPPostTickRequest();
 }
 
 // These three back PSLinkListCells, so they trade in the NSNumbers listed as
@@ -1160,7 +1165,9 @@ static const CGFloat kHPChartTop = 38.0, kHPChartBottom = 24.0, kHPChartSide = 2
     [super viewWillAppear:animated];
     [_timer invalidate];
     __weak typeof(self) weakSelf = self;
+    notify_post(HPUIWatchingNotification);
     _timer = [NSTimer scheduledTimerWithTimeInterval:10.0 repeats:YES block:^(NSTimer *t) {
+        notify_post(HPUIWatchingNotification);
         [weakSelf hpReload];
     }];
 }
@@ -1510,7 +1517,10 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
         // route-less daemon leaves behind.
         BOOL enforced = [HPDaemonBlockedMacs() containsObject:mac];
         NSDate *flush = HPDaemonLastFlush();
-        BOOL daemonAlive = flush && [[NSDate date] timeIntervalSinceDate:flush] <= 60.0;
+        // An idle daemon has stopped its heartbeat on purpose; its routes are
+        // still in place.
+        BOOL daemonAlive = (flush && [[NSDate date] timeIntervalSinceDate:flush] <= 60.0) ||
+                           HPDaemonIsIdle();
         if (enforced && daemonAlive) {
             if (manual) return @"Blocked — cut off by you";
             if ([reason isEqualToString:HPBlockReasonDaily]) return @"Blocked until midnight — daily limit";
@@ -1813,6 +1823,7 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
 
 - (void)hpRefreshValues {
     @try {
+        notify_post(HPUIWatchingNotification);
         UITableView *table = [self table];
         if (table.isDragging || table.isDecelerating || table.isTracking) return;
         for (UITableViewCell *cell in table.visibleCells) {
@@ -2005,6 +2016,12 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
         _hpEnabled = [HPConfig()[HPCfgEnabledKey] boolValue];
         gUsagePaneRef = self;
 
+        // The collector samples only while someone is connected, so the
+        // figures on disk may predate a period rollover. Ask for a fresh one;
+        // the 3s refresh below picks it up.
+        notify_post(HPUIWatchingNotification);
+        HPPostTickRequest();
+
         [_hpTimer invalidate];
         __weak typeof(self) weakSelf = self;
         _hpTimer = [NSTimer scheduledTimerWithTimeInterval:3.0
@@ -2122,6 +2139,8 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
 
 - (void)hpTick {
     @try {
+        // Keep the collector writing promptly while this is on screen.
+        notify_post(HPUIWatchingNotification);
         UITableView *table = [self table];
 
         // Never move anything under the user's finger, and never while a limit
@@ -2343,6 +2362,9 @@ static void HPReloadValues(PSListController *pane) {
         if (!isHotspot) return;
 
         gPane = pane;
+        // Same reason as the usage pane: the summary should not show a period
+        // that has already ended just because nobody was connected.
+        HPPostTickRequest();
         if (HPOurSpecifiersIn(specs).count == 0) {
             HPAppendToPane(pane);
             HPLog(@"appended rows to %@", cls);

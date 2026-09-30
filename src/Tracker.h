@@ -44,6 +44,11 @@ extern NSString *const HPBlockReasonSchedule; // inside its blocked hours
 /// Returns nil when the tweak is disabled in config.
 NSDictionary *HPTick(void);
 
+/// A Settings pane is showing the figures: for the next 20s, write the state
+/// on every sample that changes it, instead of batching byte counts every 30s.
+/// Call on the same queue as HPTick.
+void HPTickNoteWatched(void);
+
 /// A human-readable summary of current state, for `hotspotpro status`.
 NSString *HPStatusReport(void);
 

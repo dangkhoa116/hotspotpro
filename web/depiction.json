@@ -78,7 +78,7 @@
       "views": [
         {
           "class": "DepictionMarkdownView",
-          "markdown": "**0.8.0**\n• Alerts when a new device joins, and Ask Before Allowing: a new device gets no internet until you allow it\n• Blocked hours and a daily limit for each device\n• A day-by-day usage chart for the hotspot and for every device\n• Live download and upload speed, per device\n• Blocks take effect within a second or two"
+          "markdown": "**0.8.0**\n• Alerts when a new device joins, and Ask Before Allowing: a new device gets no internet until you allow it\n• Blocked hours and a daily limit for each device\n• A day-by-day usage chart for the hotspot and for every device\n• Live download and upload speed, per device\n• Nothing runs in the background while nobody is connected, and far less work while sharing\n• Blocks take effect within a second or two"
         },
         { "class": "DepictionSeparatorView" },
         {

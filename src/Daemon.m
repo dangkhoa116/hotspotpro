@@ -37,6 +37,7 @@
 #define HP_BIOCFLUSH     _IO  ('B', 104)
 #define HP_BIOCGDLT      _IOR ('B', 106, u_int)
 #define HP_BIOCSETIF     _IOW ('B', 108, struct ifreq)
+#define HP_BIOCSRTIMEOUT _IOW ('B', 109, struct timeval)
 #define HP_BIOCIMMEDIATE _IOW ('B', 112, u_int)
 #define HP_BIOCSSEESENT  _IOW ('B', 118, u_int)
 
@@ -70,6 +71,16 @@ struct hp_bpf_hdr {
 static const size_t kBufferSize = 32768;
 static const NSTimeInterval kFlushInterval = 10.0;
 
+// How long the tap may hear nothing from any client before the daemon goes
+// idle. Longer than the collector's presence window (4 minutes), so every
+// device has been judged gone before the heartbeat stops.
+static const NSTimeInterval kIdleAfter = 300.0;
+
+// How often, at most, the loop re-reads config, re-applies the blocklist and
+// looks for the bridge when nothing has told it to. Under load the loop comes
+// round several times a second, once per filled buffer.
+static const NSTimeInterval kChoresInterval = 5.0;
+
 #pragma mark - State
 
 static NSMutableDictionary<NSString *, NSNumber *> *gBytesByMac;
@@ -86,6 +97,21 @@ static NSMutableSet<NSString *> *gTouchedMacs;
 // after a bridge flap every per-client timestamp is stale at once, and a reader
 // that could not see the difference declared connected devices departed.
 static NSDate *gTapSince;
+
+// Whether the open tap was given a read timeout, so a partly filled buffer is
+// delivered within seconds instead of only once 32 KB of headers have piled
+// up. Only a tap that does this can be left to wake the daemon on its own.
+static BOOL gTapTimesOut;
+// When a client last sent a frame, and whether the daemon has gone idle for
+// want of one. Idle means no timer at all: the daemon sleeps until a frame, a
+// routing message or a notification arrives.
+static CFAbsoluteTime gLastClientFrame;
+static BOOL gIdle;
+// A client spoke after a minute or more of silence — back from sleep, back in
+// range, or new. The collector stops sampling while nobody is connected, so it
+// is told at once rather than finding out on a heartbeat it is not reading.
+static BOOL gClientReturned;
+static const NSTimeInterval kReturnAfter = 60.0;
 
 // MAC -> IP for every block this daemon has installed. Declared here, up with
 // the other state, because the flush publishes its keys — it is read well
@@ -196,6 +222,10 @@ static void HPFlushCounters(void) {
         // Absent rather than null while there is no tap, so a reader that finds
         // it knows a tap was open at the moment this was written.
         if (gTapSince) payload[@"tapSince"] = gTapSince;
+        // Idle: still listening, but nothing has been heard from any client
+        // for minutes, so the heartbeat has stopped. Readers treat the silence
+        // as current rather than as a daemon that died.
+        if (gIdle) payload[@"idle"] = @YES;
         // The MACs a reject route is actually installed for right now, so the
         // UI can tell "the tracker wants this blocked" from "the block is
         // really in place". They diverge when this daemon is not running or
@@ -203,7 +233,7 @@ static void HPFlushCounters(void) {
         // showed "Blocked" over a device that still had working internet.
         payload[@"installedBlocks"] = [gInstalledBlocks allKeys];
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:payload
-                                                                  format:NSPropertyListXMLFormat_v1_0
+                                                                  format:NSPropertyListBinaryFormat_v1_0
                                                                  options:0
                                                                    error:NULL];
         if (!data || ![data writeToFile:tmp atomically:NO]) return;
@@ -309,6 +339,16 @@ static void HPSaveInstalledBlocks(void) {
     [gInstalledBlocks writeToFile:HPInstalledBlocksPath() atomically:YES];
 }
 
+static NSDictionary *gSavedBlocks;
+
+/// Write the installed-blocks file only when it would say something new. It
+/// was rewritten on every pass of the loop — several times a second under load.
+static void HPSaveInstalledBlocksIfChanged(void) {
+    if (gSavedBlocks && [gSavedBlocks isEqualToDictionary:gInstalledBlocks]) return;
+    HPSaveInstalledBlocks();
+    gSavedBlocks = [gInstalledBlocks copy];
+}
+
 /// Bring the routing table in line with the collector's blocklist.
 static void HPApplyBlocklist(void) {
     @try {
@@ -335,7 +375,7 @@ static void HPApplyBlocklist(void) {
             if (HPSetRouteBlock(desired[mac], YES)) gInstalledBlocks[mac] = desired[mac];
         }
 
-        HPSaveInstalledBlocks();
+        HPSaveInstalledBlocksIfChanged();
 
         // Self-heal, at most once a minute: delete any reject route on a client
         // address that is NOT currently meant to be blocked. The loop above
@@ -460,19 +500,88 @@ static int HPOpenBPF(NSString *ifname) {
         HPDaemonLog(@"BIOCSETF: %s", strerror(errno));
     }
 
-    // Batched, not immediate: the read returns when the buffer fills or the
-    // select() timeout fires, rather than once per packet.
+    // Batched, not immediate: frames are delivered a buffer at a time, not
+    // one wake-up per packet. The read timeout bounds how long a partly filled
+    // buffer waits: without it, light traffic sat in the kernel until 32 KB of
+    // headers had built up — minutes, for a device only browsing — and both
+    // its bytes and its presence arrived that late.
     u_int immediate = 0;
     ioctl(fd, HP_BIOCIMMEDIATE, &immediate);
+    struct timeval rtimeout = { .tv_sec = 2, .tv_usec = 0 };
+    gTapTimesOut = (ioctl(fd, HP_BIOCSRTIMEOUT, &rtimeout) == 0);
+    if (!gTapTimesOut) HPDaemonLog(@"BIOCSRTIMEOUT: %s — staying on a timer", strerror(errno));
     ioctl(fd, HP_BIOCFLUSH);
 
     HPDaemonLog(@"tapping %@ (fd %d, buffer %u bytes)", ifname, fd, blen);
     return fd;
 }
 
-static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
+/// A MAC as a 48-bit number, so frames can be sorted by client without
+/// building an object per frame.
+static uint64_t HPMacBits(const unsigned char *m) {
+    return ((uint64_t)m[0] << 40) | ((uint64_t)m[1] << 32) | ((uint64_t)m[2] << 24) |
+           ((uint64_t)m[3] << 16) | ((uint64_t)m[4] << 8) | (uint64_t)m[5];
+}
+
+/// "aa:bb:cc:dd:ee:ff" as HPMacBits, or UINT64_MAX (never a real MAC) if it
+/// does not parse.
+static uint64_t HPMacBitsFromString(NSString *mac) {
+    unsigned int b[6];
+    if (mac.length == 0 ||
+        sscanf([mac UTF8String], "%x:%x:%x:%x:%x:%x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6) {
+        return UINT64_MAX;
+    }
+    unsigned char bytes[6];
+    for (int i = 0; i < 6; i++) bytes[i] = (unsigned char)b[i];
+    return HPMacBits(bytes);
+}
+
+/// One client's frames in the buffer being read.
+typedef struct {
+    uint64_t mac;
+    uint64_t up, down;
+    BOOL sent;      // it sent at least one frame: evidence it is here
+} HPTally;
+
+enum { kHPMaxTallies = 32 };
+
+/// Add a buffer's tallies to the running counters. This is the only place
+/// objects are made, once per client per buffer rather than per frame: at
+/// full speed a buffer holds about a thousand frames.
+static void HPFoldTallies(HPTally *tally, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        unsigned char m[6];
+        for (int b = 0; b < 6; b++) m[b] = (unsigned char)(tally[i].mac >> (8 * (5 - b)));
+        NSString *client = HPMacString(m);
+        uint64_t both = tally[i].up + tally[i].down;
+        if (both) {
+            gBytesByMac[client] = @([gBytesByMac[client] unsignedLongLongValue] + both);
+            // A frame the client sent is its upload; one sent toward it is its
+            // download. The two sum back to gBytesByMac.
+            if (tally[i].up) {
+                gUploadByMac[client] = @([gUploadByMac[client] unsignedLongLongValue] + tally[i].up);
+            }
+            if (tally[i].down) {
+                gDownloadByMac[client] = @([gDownloadByMac[client] unsignedLongLongValue] + tally[i].down);
+            }
+        }
+        if (tally[i].sent) {
+            NSDate *last = gLastSeenByMac[client];
+            if (![gTouchedMacs containsObject:client] &&
+                (!last || -[last timeIntervalSinceNow] >= kReturnAfter)) {
+                gClientReturned = YES;
+            }
+            [gTouchedMacs addObject:client];
+            gLastClientFrame = CFAbsoluteTimeGetCurrent();
+        }
+    }
+}
+
+static void HPConsume(const char *buf, ssize_t len, uint64_t bridgeMac) {
     const char *p = buf;
     const char *end = buf + len;
+    HPTally tally[kHPMaxTallies];
+    size_t used = 0;
 
     while (p + sizeof(struct hp_bpf_hdr) <= end) {
         const struct hp_bpf_hdr *bh = (const struct hp_bpf_hdr *)p;
@@ -480,39 +589,41 @@ static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
 
         const unsigned char *frame = (const unsigned char *)p + bh->bh_hdrlen;
         if ((const char *)frame + 12 <= end && bh->bh_caplen >= 12) {
-            NSString *dst = HPMacString(frame);
-            NSString *src = HPMacString(frame + 6);
+            uint64_t dst = HPMacBits(frame);
+            uint64_t src = HPMacBits(frame + 6);
 
             // Whichever end is not the bridge itself is the client. Broadcast
-            // and multicast are not devices.
-            BOOL fromClient = ![src isEqualToString:bridgeMac];
-            NSString *client = fromClient ? src : dst;
-            unsigned int firstOctet = 0;
-            sscanf([[client substringToIndex:2] UTF8String], "%x", &firstOctet);
-            BOOL isGroupAddress = (firstOctet & 0x01) != 0;
+            // and multicast (the group bit, the low bit of the first octet)
+            // are not devices.
+            BOOL fromClient = (src != bridgeMac);
+            uint64_t client = fromClient ? src : dst;
+            BOOL isGroupAddress = ((client >> 40) & 0x01) != 0;
             // The snap length is 14, so the ethertype is always in hand.
             BOOL isArp = bh->bh_caplen >= 14 && (const char *)frame + 14 <= end &&
                          frame[12] == 0x08 && frame[13] == 0x06;
 
-            if (!isGroupAddress && ![client isEqualToString:bridgeMac]) {
-                // An ARP frame the phone sent is one of the presence probes
-                // above: this daemon's own overhead, not the client's traffic.
-                // Counting those would trickle our bytes onto every device's
-                // total for as long as the hotspot was up.
-                if (fromClient || !isArp) {
-                    uint64_t prev = [gBytesByMac[client] unsignedLongLongValue];
-                    gBytesByMac[client] = @(prev + bh->bh_datalen);
-                    // A frame the client sent is its upload; one sent toward it
-                    // is its download. The two sum back to gBytesByMac.
-                    NSMutableDictionary *dir = fromClient ? gUploadByMac : gDownloadByMac;
-                    uint64_t prevDir = [dir[client] unsignedLongLongValue];
-                    dir[client] = @(prevDir + bh->bh_datalen);
+            if (!isGroupAddress && client != bridgeMac) {
+                size_t i = 0;
+                while (i < used && tally[i].mac != client) i++;
+                if (i == used) {
+                    if (used == kHPMaxTallies) {   // more clients than iOS allows; fold and go on
+                        HPFoldTallies(tally, used);
+                        used = 0;
+                        i = 0;
+                    }
+                    tally[used++] = (HPTally){ .mac = client };
                 }
+                // An ARP frame the phone sent is a presence probe: this
+                // daemon's own overhead, not the client's traffic. Counting
+                // those would trickle our bytes onto every device's total for
+                // as long as the hotspot was up.
+                if (fromClient) tally[i].up += bh->bh_datalen;
+                else if (!isArp) tally[i].down += bh->bh_datalen;
                 // Bytes are counted in both directions; presence is not. Only a
                 // frame the client SENT is evidence that it is here — a frame
-                // the phone sent toward it proves nothing, least of all a probe,
-                // which would otherwise answer its own question.
-                if (fromClient) [gTouchedMacs addObject:client];
+                // the phone sent toward it proves nothing, least of all a
+                // probe, which would otherwise answer its own question.
+                if (fromClient) tally[i].sent = YES;
             }
         }
 
@@ -520,6 +631,7 @@ static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
         if (advance == 0) break;
         p += advance;
     }
+    HPFoldTallies(tally, used);
 }
 
 #pragma mark - Main loop
@@ -529,6 +641,42 @@ static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
 static void HPDrainNotify(int nfd) {
     int token;
     while (read(nfd, &token, sizeof(token)) == sizeof(token)) { }
+}
+
+/// Sleep until the tap (if `tap` >= 0), the routing socket or the blocklist
+/// notification has something, or `timeout` passes — NULL waits with no
+/// timeout at all. Drains the socket and the notification, and marks the
+/// chores due when either fired. Returns whether the tap is readable.
+///
+/// Without a routing socket there is no event to wait for, so it falls back to
+/// a 15s poll rather than sleeping forever.
+static BOOL HPWaitForEvents(int tap, int rs, int nfd, struct timeval *timeout, BOOL *choresDue) {
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    int top = -1;
+    if (tap >= 0) { FD_SET(tap, &rfds); if (tap > top) top = tap; }
+    if (rs >= 0)  { FD_SET(rs, &rfds);  if (rs > top) top = rs; }
+    if (nfd >= 0) { FD_SET(nfd, &rfds); if (nfd > top) top = nfd; }
+
+    struct timeval fallback = { .tv_sec = 15, .tv_usec = 0 };
+    if (!timeout && rs < 0) timeout = &fallback;
+    if (top < 0) {
+        sleep((unsigned int)(timeout ? timeout->tv_sec : 15));
+        *choresDue = YES;
+        return NO;
+    }
+
+    int ready = select(top + 1, &rfds, NULL, NULL, timeout);
+    if (ready <= 0) return NO;
+    if (rs >= 0 && FD_ISSET(rs, &rfds)) {
+        HPDrainRouteSocket(rs);
+        *choresDue = YES;
+    }
+    if (nfd >= 0 && FD_ISSET(nfd, &rfds)) {
+        HPDrainNotify(nfd);
+        *choresDue = YES;
+    }
+    return tap >= 0 && FD_ISSET(tap, &rfds);
 }
 
 int main(int argc, char *argv[]) {
@@ -591,10 +739,10 @@ int main(int argc, char *argv[]) {
                         strerror(errno));
         }
 
-        // The collector posts this each time it rewrites the blocklist. Waiting
-        // on it alongside everything else means a block, a release or a held
-        // device takes effect at once, rather than on the next pass up to five
-        // seconds later. Without it the loop still picks changes up, just later.
+        // The collector posts this each time it rewrites the blocklist, and
+        // Settings when tracking is switched on or off. Waiting on it alongside
+        // everything else means a change takes effect at once, and lets the
+        // loop sleep with no timer while the hotspot is off or idle.
         int nfd = -1, ntoken = 0;
         if (notify_register_file_descriptor(HPBlocklistChangedNotification, &nfd, 0,
                                             &ntoken) == NOTIFY_STATUS_OK) {
@@ -606,125 +754,122 @@ int main(int argc, char *argv[]) {
 
         int fd = -1;
         NSString *bridgeName = nil;
-        NSString *bridgeMac = nil;
+        uint64_t bridgeMac = UINT64_MAX;
         NSDate *lastFlush = [NSDate date];
+        CFAbsoluteTime lastChores = 0;
+        BOOL choresDue = YES;   // something said config, blocklist or network moved
+        BOOL trackingOff = NO;
 
         while (1) {
             @autoreleasepool {
-                // "Track Hotspot Usage" off means off: close the tap so nothing
-                // is captured and nothing is counted, and idle cheaply until it
-                // is switched back on.
-                if (![HPConfig()[HPCfgEnabledKey] boolValue]) {
-                    HPWriteDaemonStatus(@"tracking-off");
-                    if (fd >= 0) {
-                        HPDaemonLog(@"tracking disabled, closing tap");
+                CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+
+                // --- chores ---------------------------------------------------
+                // Config, the blocklist and which bridge is up. Done when an
+                // event says one of them changed, and otherwise at most every
+                // 5s: under load this loop comes round several times a second,
+                // and doing these each time was several file reads and a file
+                // write per second for as long as data flowed. While idle,
+                // only an event brings them round.
+                if (choresDue || fd < 0 || (!gIdle && now - lastChores >= kChoresInterval)) {
+                    choresDue = NO;
+                    lastChores = now;
+
+                    // "Track Hotspot Usage" off means off: close the tap so
+                    // nothing is captured and nothing is counted.
+                    if (![HPConfig()[HPCfgEnabledKey] boolValue]) {
+                        HPWriteDaemonStatus(@"tracking-off");
+                        if (trackingOff) {
+                            // Already cleared; nothing adds a route while off.
+                            HPWaitForEvents(-1, rs, nfd, NULL, &choresDue);
+                            continue;
+                        }
+                        trackingOff = YES;
+                        if (fd >= 0) {
+                            HPDaemonLog(@"tracking disabled, closing tap");
+                            close(fd);
+                            fd = -1;
+                            bridgeName = nil;
+                            gTapSince = nil;
+                            gIdle = NO;
+                            HPFlushCounters();
+                        }
+                        // Tracking off must not leave anyone cut off. Clear what
+                        // we tracked, then sweep the whole client range so an
+                        // orphan route we no longer remember cannot strand a
+                        // device.
+                        if (gInstalledBlocks.count) [gInstalledBlocks removeAllObjects];
+                        HPSaveInstalledBlocksIfChanged();
+                        HPSweepHotspotRejectRoutes();
+                        // Then sleep until something changes: Settings posts the
+                        // notification when the switch is turned back on.
+                        HPWaitForEvents(-1, rs, nfd, NULL, &choresDue);
+                        continue;
+                    }
+                    trackingOff = NO;
+
+                    NSDictionary *bridge = HPFindBridge();
+                    if (!bridge && fd >= 0) {
+                        HPDaemonLog(@"%@ went away, closing tap", bridgeName);
                         close(fd);
                         fd = -1;
                         bridgeName = nil;
                         gTapSince = nil;
+                        gIdle = NO;
                         HPFlushCounters();
                     }
-                    // Tracking off must not leave anyone cut off. Clear what we
-                    // tracked, then sweep the whole client range so an orphan
-                    // route we no longer remember cannot strand a device —
-                    // which is exactly what made a blocked device stay cut off
-                    // even after tracking was switched off.
-                    if (gInstalledBlocks.count) {
-                        [gInstalledBlocks removeAllObjects];
-                        HPSaveInstalledBlocks();
+                    if (bridge && fd < 0) {
+                        bridgeName = bridge[HPIfNameKey];
+                        bridgeMac = HPMacBitsFromString(bridge[HPIfMacKey]);
+                        fd = HPOpenBPF(bridgeName);
+                        if (fd < 0) {
+                            // Do not spin retrying a tap that cannot be opened.
+                            HPWriteDaemonStatus(@"no-bpf");
+                            sleep(30);
+                            continue;
+                        }
+                        gTapSince = [NSDate date];
+                        // A fresh tap has heard nothing yet; give clients the
+                        // whole idle window to speak before concluding nobody
+                        // is there.
+                        gLastClientFrame = now;
+                        gIdle = NO;
+                        HPWriteDaemonStatus(@"running");
                     }
-                    HPSweepHotspotRejectRoutes();
-                    sleep(15);
-                    continue;
+                    // Routes only matter while there is a hotspot to route
+                    // for; with it off, a Wi-Fi network moving is no reason to
+                    // read the blocklist.
+                    if (fd >= 0) HPApplyBlocklist();
                 }
 
-                HPApplyBlocklist();
-
-                NSDictionary *bridge = HPFindBridge();
-
-                if (!bridge && fd >= 0) {
-                    HPDaemonLog(@"%@ went away, closing tap", bridgeName);
-                    close(fd);
-                    fd = -1;
-                    bridgeName = nil;
-                    gTapSince = nil;
-                    HPFlushCounters();
-                }
-
-                if (bridge && fd < 0) {
-                    bridgeName = bridge[HPIfNameKey];
-                    bridgeMac = bridge[HPIfMacKey] ?: @"";
-                    fd = HPOpenBPF(bridgeName);
-                    if (fd < 0) {
-                        // Do not spin retrying a tap that cannot be opened.
-                        HPWriteDaemonStatus(@"no-bpf");
-                        sleep(30);
-                        continue;
-                    }
-                    gTapSince = [NSDate date];
-                    HPWriteDaemonStatus(@"running");
-                }
-
+                // --- hotspot off ----------------------------------------------
                 if (fd < 0) {
                     HPWriteDaemonStatus(@"hotspot-off");
-                    // Hotspot off. Rather than waking on a timer to ask whether
-                    // anything changed, block until the kernel says so: the
-                    // routing socket becomes readable the moment an interface
-                    // or address appears, which is exactly what starting a
-                    // hotspot does. Waiting here costs nothing. The timeout is
-                    // a backstop for a missed message, not the mechanism.
-                    if (rs >= 0) {
-                        fd_set rfds;
-                        FD_ZERO(&rfds);
-                        FD_SET(rs, &rfds);
-                        int top = rs;
-                        if (nfd >= 0) {
-                            FD_SET(nfd, &rfds);
-                            if (nfd > top) top = nfd;
-                        }
-                        struct timeval tv = { .tv_sec = 60, .tv_usec = 0 };
-                        if (select(top + 1, &rfds, NULL, NULL, &tv) > 0) {
-                            if (FD_ISSET(rs, &rfds)) HPDrainRouteSocket(rs);
-                            if (nfd >= 0 && FD_ISSET(nfd, &rfds)) HPDrainNotify(nfd);
-                        }
-                    } else {
-                        sleep(15);   // no routing socket; fall back to polling
-                    }
+                    // No timer: the routing socket becomes readable the moment
+                    // an interface or address appears, which is exactly what
+                    // starting a hotspot does, and a notification arrives for
+                    // anything Settings changes. Waiting here costs nothing.
+                    HPWaitForEvents(-1, rs, nfd, NULL, &choresDue);
                     continue;
                 }
 
-                fd_set readfds;
-                FD_ZERO(&readfds);
-                FD_SET(fd, &readfds);
-                int maxfd = fd;
-                if (rs >= 0) {
-                    FD_SET(rs, &readfds);
-                    if (rs > maxfd) maxfd = rs;
+                // --- idle -----------------------------------------------------
+                // Nobody has sent a frame for minutes: stop the heartbeat and
+                // sleep until a frame arrives. Only a tap with a read timeout
+                // can be trusted to deliver that first frame promptly.
+                if (!gIdle && gTapTimesOut && now - gLastClientFrame >= kIdleAfter) {
+                    gIdle = YES;
+                    HPFlushCounters();
+                    lastFlush = [NSDate date];
+                    HPDaemonLog(@"no clients for %.0fs, idle until one appears", kIdleAfter);
                 }
-                if (nfd >= 0) {
-                    FD_SET(nfd, &readfds);
-                    if (nfd > maxfd) maxfd = nfd;
-                }
-                // 5s rather than 1s: with immediate mode off this only governs
-                // how often a partly-filled buffer is drained, and waking five
-                // times less often while tethering costs nothing but latency.
+
+                // 5s while clients are about: with immediate mode off this only
+                // paces the heartbeat and the chores. None at all while idle.
                 struct timeval timeout = { .tv_sec = 5, .tv_usec = 0 };
+                BOOL readable = HPWaitForEvents(fd, rs, nfd, gIdle ? NULL : &timeout, &choresDue);
 
-                int ready = select(maxfd + 1, &readfds, NULL, NULL, &timeout);
-
-                // The hotspot going down arrives here as a routing message, so
-                // the next loop notices the bridge is gone immediately instead
-                // of up to five seconds later.
-                if (ready > 0 && rs >= 0 && FD_ISSET(rs, &readfds)) {
-                    HPDrainRouteSocket(rs);
-                }
-                // Nothing to do here but drain: the blocklist is applied at the
-                // top of the loop, which this wake-up brings round at once.
-                if (ready > 0 && nfd >= 0 && FD_ISSET(nfd, &readfds)) {
-                    HPDrainNotify(nfd);
-                }
-
-                if (ready > 0 && FD_ISSET(fd, &readfds)) {
+                if (readable) {
                     ssize_t n = read(fd, buf, kBufferSize);
                     if (n > 0) {
                         HPConsume(buf, n, bridgeMac);
@@ -736,11 +881,27 @@ int main(int argc, char *argv[]) {
                         close(fd);
                         fd = -1;
                         gTapSince = nil;
+                        gIdle = NO;
                         HPFlushCounters();
+                        continue;
                     }
                 }
 
-                if ([[NSDate date] timeIntervalSinceDate:lastFlush] >= kFlushInterval) {
+                // A client spoke after a quiet spell (which is always the
+                // case when leaving idle): publish its stamp now rather than
+                // on the next heartbeat, and wake the collector, which may be
+                // sleeping for want of anyone to count.
+                if (gClientReturned) {
+                    gClientReturned = NO;
+                    if (gIdle) HPDaemonLog(@"client traffic, leaving idle");
+                    gIdle = NO;
+                    HPFlushCounters();
+                    lastFlush = [NSDate date];
+                    notify_post(HPDaemonActivityNotification);
+                    choresDue = YES;
+                }
+
+                if (!gIdle && [[NSDate date] timeIntervalSinceDate:lastFlush] >= kFlushInterval) {
                     HPFlushCounters();
                     lastFlush = [NSDate date];
                 }

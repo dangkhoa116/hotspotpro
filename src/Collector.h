@@ -152,6 +152,11 @@ NSDictionary *HPCopyDaemonStatus(void);
 /// it is. Empty when the daemon has never run.
 NSArray<NSString *> *HPDaemonBlockedMacs(void);
 
+/// Whether the daemon has gone idle: its tap is open, but no client has sent a
+/// frame for minutes, so it has stopped its 10s heartbeat until one does. Its
+/// silence then means "nobody", not "not running".
+BOOL HPDaemonIsIdle(void);
+
 /// When the daemon last wrote its counters — every 10s while its tap is open,
 /// whether or not any traffic arrived. This is the heartbeat that says "the
 /// silence of a given client means something", which per-client timestamps

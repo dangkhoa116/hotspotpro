@@ -66,6 +66,14 @@ void HPPostTickRequest(void);
 /// applies it at once instead of on its next pass.
 extern const char *const HPBlocklistChangedNotification;
 
+/// Posted by the daemon when a client speaks after it had gone idle, so the
+/// collector — which also stops sampling while nobody is connected — wakes up.
+extern const char *const HPDaemonActivityNotification;
+
+/// Posted every few seconds by a Settings pane showing usage, so the collector
+/// writes its figures promptly while somebody is looking.
+extern const char *const HPUIWatchingNotification;
+
 #pragma mark - State
 
 extern NSString *const HPStTotalBytesKey;   // unsigned long long, this period

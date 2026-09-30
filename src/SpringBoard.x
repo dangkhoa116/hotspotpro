@@ -41,9 +41,21 @@ static int gRouteFD = -1;
 
 static void HPCollectorSample(void);
 
+// Whether the 10s timer is running. Written on the main thread, read by the
+// routing-socket handler on the collector queue; a stale read only costs or
+// saves one sample.
+static volatile BOOL gTicking;
+
 /// Present the next queued alert, if none is on screen. Main thread only.
 static void HPPresentNextAlert(void) {
     @try {
+        // An alert that went away without one of its buttons being tapped
+        // must not hold up every alert after it — a held device nobody is
+        // told about just sits there with no internet.
+        if (gAlertWindow && !gAlertWindow.rootViewController.presentedViewController) {
+            gAlertWindow.hidden = YES;
+            gAlertWindow = nil;
+        }
         if (gAlertWindow || !gAlertQueue.count) return;
         UIAlertController *alert = gAlertQueue.firstObject;
         [gAlertQueue removeObjectAtIndex:0];
@@ -161,10 +173,36 @@ static void HPAnnounceJoined(NSDictionary *device) {
         }, 1);
 }
 
+/// Run the 10s timer only while there is something to count: the hotspot on
+/// and somebody connected. Otherwise nothing runs on a clock at all — a sample
+/// happens when the hotspot comes up or a device joins (routing messages),
+/// when the daemon hears a client after going quiet, or when Settings asks.
+/// Main thread only.
+static void HPSetTicking(BOOL wanted) {
+    if (wanted == (gCollectorTimer != nil)) return;
+    if (wanted) {
+        gCollectorTimer = [NSTimer scheduledTimerWithTimeInterval:10.0
+                                                          repeats:YES
+                                                            block:^(NSTimer *t) {
+            HPCollectorSample();
+        }];
+        // Let the system fold this wake-up into others nearby.
+        gCollectorTimer.tolerance = 2.0;
+        HPLog(@"sampling every 10s: devices connected");
+    } else {
+        [gCollectorTimer invalidate];
+        gCollectorTimer = nil;
+        HPLog(@"sampling stopped: nobody connected");
+    }
+    gTicking = wanted;
+}
+
 static void HPCollectorSample(void) {
     dispatch_async(gCollectorQueue, ^{
         @try {
             NSDictionary *result = HPTick();
+            BOOL busy = result && HPIPForwardingEnabled() && [result[HPTickDevicesKey] count] > 0;
+            dispatch_async(dispatch_get_main_queue(), ^{ HPSetTicking(busy); });
             if (!result) return;
 
             HPTickEvents events = [result[HPTickEventsKey] unsignedIntegerValue];
@@ -232,21 +270,6 @@ static void HPStartCollector(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         @try {
-            gCollectorTimer = [NSTimer scheduledTimerWithTimeInterval:10.0
-                                                              repeats:YES
-                                                                block:^(NSTimer *t) {
-                // With the hotspot off there is nothing to measure, yet the full
-                // sample -- two kernel table walks, a lease-file parse and a
-                // state write -- was running six times a minute forever. Check
-                // the cheap signal every 10s so switching the hotspot on is
-                // still noticed quickly, but only sample once a minute while it
-                // is off.
-                static int idleTicks = 0;
-                if (!HPIPForwardingEnabled() && ++idleTicks < 6) return;
-                idleTicks = 0;
-                HPCollectorSample();
-            }];
-
             // Settings asks for a sample the moment it needs one — a reset
             // otherwise sat waiting for the next 10s tick, which reads as the
             // button having done nothing.
@@ -256,12 +279,27 @@ static void HPStartCollector(void) {
                 HPCollectorSample();
             });
 
+            // A Settings pane is showing the figures: write them promptly.
+            static int watchingToken;
+            notify_register_dispatch(HPUIWatchingNotification, &watchingToken,
+                                     gCollectorQueue, ^(int t) {
+                HPTickNoteWatched();
+            });
+
+            // The daemon heard a client after a quiet spell. With nobody
+            // connected this process runs no timer, so this is what brings it
+            // back when a device that never left starts talking again.
+            static int activityToken;
+            notify_register_dispatch(HPDaemonActivityNotification, &activityToken,
+                                     dispatch_get_main_queue(), ^(int t) {
+                HPCollectorSample();
+            });
+
             // Turning the hotspot on creates an interface and gives it an
-            // address, and the kernel announces both on a routing socket. A
-            // read source on that socket means the first sample of a session
-            // happens at once, instead of up to a minute later when the idle
-            // backoff above next comes round — so the timer can stay lazy
-            // without the pane looking stale when someone starts sharing.
+            // address, and a device joining adds a neighbour; the kernel
+            // announces each on a routing socket. That is what wakes this
+            // process while no timer runs, so the first sample of a session
+            // happens the moment there is something to count.
             gRouteFD = socket(PF_ROUTE, SOCK_RAW, AF_UNSPEC);
             if (gRouteFD >= 0) {
                 gRouteSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ,
@@ -272,6 +310,12 @@ static void HPStartCollector(void) {
                     // would silently turn this back into timer-only polling.
                     char scratch[2048];
                     while (recv(gRouteFD, scratch, sizeof(scratch), MSG_DONTWAIT) > 0) { }
+
+                    // With the hotspot off these are the phone's own networks
+                    // moving — Wi-Fi neighbours, cellular — and there is nothing
+                    // to count. One sysctl says so. A running timer still gets
+                    // its sample, so switching the hotspot off is noticed.
+                    if (!HPIPForwardingEnabled() && !gTicking) return;
 
                     // Ordinary neighbour churn on whatever Wi-Fi network the
                     // phone is on also lands here, so this is rate-limited
@@ -286,7 +330,14 @@ static void HPStartCollector(void) {
                 });
                 dispatch_resume(gRouteSource);
             } else {
-                HPLog(@"route socket failed, timer only: %s", strerror(errno));
+                // Nothing to wake on, so fall back to looking once a minute.
+                HPLog(@"route socket failed, polling once a minute: %s", strerror(errno));
+                static NSTimer *fallback;
+                fallback = [NSTimer scheduledTimerWithTimeInterval:60.0 repeats:YES
+                                                             block:^(NSTimer *t) {
+                    if (HPIPForwardingEnabled() && !gTicking) HPCollectorSample();
+                }];
+                fallback.tolerance = 10.0;
             }
 
             HPLog(@"collector started in SpringBoard");

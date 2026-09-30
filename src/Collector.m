@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <netinet/in.h>
@@ -725,11 +726,15 @@ NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfName
             return cached;
         }
 
+        // An idle daemon is still listening: it stopped its heartbeat only
+        // because no client has sent a frame for minutes, and it writes the
+        // moment one does. So its silence is as current as a fresh heartbeat.
+        NSDate *heartbeat = HPDaemonIsIdle() ? now : HPDaemonLastFlush();
         NSArray *present =
             HPFilterPresentDevices(HPCopyConnectedDevices(hotspotIfNames) ?: @[],
                                    HPCopyDaemonLastSeen(),
                                    HPDaemonTapSince(),
-                                   HPDaemonLastFlush(),
+                                   heartbeat,
                                    HPDaemonIsProbing(),
                                    books,
                                    now);
@@ -742,9 +747,41 @@ NSArray<NSDictionary *> *HPCopyPresentDevices(NSArray<NSString *> *hotspotIfName
 
 #pragma mark - Per-device bytes (from the daemon)
 
+/// The daemon's file, parsed once per version of it.
+///
+/// Every sample asks it five questions (counters, last-seen stamps, tap age,
+/// heartbeat, probing), and each used to read and parse the whole file — up to
+/// 200 devices' worth, five times over. The daemon always replaces the file by
+/// rename, so a changed inode, size or modification time means a new version.
+/// nil when the file cannot be read.
+static NSDictionary *HPDaemonFile(void) {
+    static NSObject *lock;
+    static NSDictionary *cached;
+    static struct stat cachedStat;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSObject new]; });
+
+    @synchronized (lock) {
+        struct stat st;
+        if (stat([HPDevicesPath() fileSystemRepresentation], &st) != 0) {
+            cached = nil;
+            return nil;
+        }
+        if (cached && st.st_ino == cachedStat.st_ino && st.st_size == cachedStat.st_size &&
+            st.st_mtimespec.tv_sec == cachedStat.st_mtimespec.tv_sec &&
+            st.st_mtimespec.tv_nsec == cachedStat.st_mtimespec.tv_nsec) {
+            return cached;
+        }
+        NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
+        cached = [file isKindOfClass:[NSDictionary class]] ? file : nil;
+        if (cached) cachedStat = st;
+        return cached;
+    }
+}
+
 NSDictionary<NSString *, NSDictionary<NSString *, NSNumber *> *> *HPCopyDaemonCounters(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
-    if (![file isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *file = HPDaemonFile();
+    if (!file) return nil;
     NSDictionary *bytes = file[@"bytesByMac"];
     if (![bytes isKindOfClass:[NSDictionary class]]) return nil;
 
@@ -765,31 +802,31 @@ NSDictionary *HPCopyDaemonStatus(void) {
 }
 
 NSArray<NSString *> *HPDaemonBlockedMacs(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
-    NSArray *macs = file[@"installedBlocks"];
+    NSArray *macs = HPDaemonFile()[@"installedBlocks"];
     return [macs isKindOfClass:[NSArray class]] ? macs : @[];
 }
 
 BOOL HPDaemonIsProbing(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
-    return [file[@"probing"] boolValue];
+    return [HPDaemonFile()[@"probing"] boolValue];
+}
+
+BOOL HPDaemonIsIdle(void) {
+    NSDictionary *file = HPDaemonFile();
+    return [file[@"idle"] boolValue] && [file[@"tapSince"] isKindOfClass:[NSDate class]];
 }
 
 NSDate *HPDaemonTapSince(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
-    NSDate *since = file[@"tapSince"];
+    NSDate *since = HPDaemonFile()[@"tapSince"];
     return [since isKindOfClass:[NSDate class]] ? since : nil;
 }
 
 NSDate *HPDaemonLastFlush(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
-    NSDate *updated = file[@"updated"];
+    NSDate *updated = HPDaemonFile()[@"updated"];
     return [updated isKindOfClass:[NSDate class]] ? updated : nil;
 }
 
 NSDictionary<NSString *, NSDate *> *HPCopyDaemonLastSeen(void) {
-    NSDictionary *file = [NSDictionary dictionaryWithContentsOfFile:HPDevicesPath()];
-    NSDictionary *seen = file[@"lastSeenByMac"];
+    NSDictionary *seen = HPDaemonFile()[@"lastSeenByMac"];
     return [seen isKindOfClass:[NSDictionary class]] ? seen : @{};
 }
 

@@ -29,6 +29,8 @@ NSString *const HPCfgDailyLimitsKey  = @"dailyLimits";
 NSString *const HPPrefsChangedNotification = @"com.dangkhoa.hotspotpro/prefschanged";
 const char *const HPTickRequestNotification = "com.dangkhoa.hotspotpro/tick";
 const char *const HPBlocklistChangedNotification = "com.dangkhoa.hotspotpro/blocklist";
+const char *const HPDaemonActivityNotification = "com.dangkhoa.hotspotpro/activity";
+const char *const HPUIWatchingNotification = "com.dangkhoa.hotspotpro/watching";
 
 void HPPostTickRequest(void) {
     notify_post(HPTickRequestNotification);
@@ -146,7 +148,7 @@ BOOL HPStateSave(NSDictionary *state) {
 
     NSError *err = nil;
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:state
-                                                              format:NSPropertyListXMLFormat_v1_0
+                                                              format:NSPropertyListBinaryFormat_v1_0
                                                              options:0
                                                                error:&err];
     if (!data) {

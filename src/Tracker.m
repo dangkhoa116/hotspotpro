@@ -482,12 +482,22 @@ static NSData *HPStateFingerprint(NSDictionary *state) {
                                                        error:NULL];
 }
 
+// Until when a Settings pane showing the figures is open. Only touched on the
+// collector's queue, like everything else HPTick does.
+static NSDate *gWatchedUntil;
+
+void HPTickNoteWatched(void) {
+    gWatchedUntil = [NSDate dateWithTimeIntervalSinceNow:20.0];
+}
+
 NSDictionary *HPTick(void) {
     NSDictionary *cfg = HPConfig();
     if (![cfg[HPCfgEnabledKey] boolValue]) return nil;
 
     NSMutableDictionary *state = HPStateLoad();
     NSData *fingerprintBefore = HPStateFingerprint(state);
+    id schemaBefore = state[HPStSchemaKey];
+    id reasonsBefore = state[HPStBlockReasonsKey];
     NSDate *now = [NSDate date];
     NSInteger resetDay = [cfg[HPCfgResetDayKey] integerValue];
     HPTickEvents events = HPTickEventNone;
@@ -595,11 +605,25 @@ NSDictionary *HPTick(void) {
         // the raw MAC, which read as no name at all.
         NSString *nick = [nicknames isKindOfClass:[NSDictionary class]] ? nicknames[mac] : nil;
         entry[HPDevNameKey] = HPDeviceDisplayName(mac, dev[HPDevNameKey], nick);
-        if ([presentMacs containsObject:mac]) [devicesNow addObject:entry];
+        if ([presentMacs containsObject:mac]) {
+            // Without the ARP expiry, which the kernel moves on its own schedule:
+            // kept, it made every sample look like a change, and the state file
+            // was rewritten every 10s for as long as anyone was connected, idle
+            // or not. Nothing reads it from here.
+            NSMutableDictionary *row = [entry mutableCopy];
+            [row removeObjectForKey:HPDevExpiresKey];
+            [devicesNow addObject:row];
+        }
 
         NSMutableDictionary *record = [(seen[mac] ?: @{}) mutableCopy];
         if (!record[@"first"]) record[@"first"] = now;
-        record[@"last"] = now;
+        // To the minute, for the same reason: a stamp that moves every sample
+        // is a state-file write every sample. Traffic moves it anyway, through
+        // the attribution below.
+        NSDate *lastSeen = record[@"last"];
+        if (![lastSeen isKindOfClass:[NSDate class]] || [now timeIntervalSinceDate:lastSeen] >= 60.0) {
+            record[@"last"] = now;
+        }
         record[@"name"] = entry[HPDevNameKey];
         if (dev[HPDevIPKey]) record[@"ip"] = dev[HPDevIPKey];
         seen[mac] = record;
@@ -760,8 +784,15 @@ NSDictionary *HPTick(void) {
     // Only rewrite the file when what it says actually changes (a device moving
     // to a new address counts); the daemon reads it on every pass. Then say so,
     // so the daemon applies it now rather than on its next pass.
-    NSArray *onFile = [NSDictionary dictionaryWithContentsOfFile:HPBlocklistPath()][@"blocked"];
-    if (![onFile isKindOfClass:[NSArray class]] || ![onFile isEqualToArray:blocked]) {
+    // Compared against what this process last wrote, so a sample does not read
+    // the file back each time; the file is read once, on the first sample.
+    static NSArray *onFile;
+    if (!onFile) {
+        onFile = [NSDictionary dictionaryWithContentsOfFile:HPBlocklistPath()][@"blocked"];
+        if (![onFile isKindOfClass:[NSArray class]]) onFile = @[ @"(unread)" ];
+    }
+    if (![onFile isEqualToArray:blocked]) {
+        onFile = [blocked copy];
         [@{ @"blocked" : blocked, @"updated" : now } writeToFile:HPBlocklistPath()
                                                       atomically:YES];
         notify_post(HPBlocklistChangedNotification);
@@ -789,9 +820,21 @@ NSDictionary *HPTick(void) {
     // around 8,600 a day -- with identical contents. Write when something
     // actually changed, and otherwise no more than once a minute so the "last
     // updated" stamp cannot drift arbitrarily far behind.
+    //
+    // And while data flows, byte counts change on every sample, but they need
+    // not be written every time: each sample starts from the file, and the
+    // interface baselines are saved with the totals, so a sample that is not
+    // written is simply counted again by the next one. Those go out every 30s.
+    // Anything that must not happen twice — an alert, a first-run step — or
+    // that someone is looking at goes out at once.
     static NSDate *lastWrite;
     BOOL changed = ![HPStateFingerprint(state) isEqualToData:fingerprintBefore];
-    if (changed || !lastWrite || [now timeIntervalSinceDate:lastWrite] >= 60.0) {
+    BOOL prompt = !lastWrite || events != HPTickEventNone ||
+                  (gWatchedUntil && [now compare:gWatchedUntil] == NSOrderedAscending) ||
+                  ![(schemaBefore ?: @0) isEqual:(state[HPStSchemaKey] ?: @0)] ||
+                  ![(reasonsBefore ?: @{}) isEqual:(state[HPStBlockReasonsKey] ?: @{})];
+    BOOL due = !lastWrite || [now timeIntervalSinceDate:lastWrite] >= (changed ? 30.0 : 60.0);
+    if ((changed && prompt) || due) {
         HPStateSave(state);
         lastWrite = now;
     }
