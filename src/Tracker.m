@@ -2,11 +2,26 @@
 #import "Collector.h"
 #import "Prefs.h"
 #import "Apportion.h"
+#include <notify.h>
 
 const NSTimeInterval HPAttributeWindow = 60.0;
 
-// Bumped when a one-time repair of stored figures is added; see HPRepairTotals.
-static const NSInteger kHPSchema = 2;
+// Each one-time change to stored figures runs once, when the state's schema is
+// below its number, and then records it. The 0.7.1 repair is 2; seeding the
+// registry of known devices (0.8.0) is 3.
+static const NSInteger kHPSchemaRepair = 2;
+static const NSInteger kHPSchemaKnown = 3;
+
+// The registry of known devices outlives periods, so it is bounded: a device
+// unseen for half a year is forgotten, and at most this many are kept.
+static const NSTimeInterval kHPKnownMaxAge = 60 * 60 * 24 * 180;
+static const NSUInteger kHPKnownMax = 400;
+
+NSString *const HPBlockReasonManual   = @"manual";
+NSString *const HPBlockReasonPending  = @"pending";
+NSString *const HPBlockReasonLimit    = @"limit";
+NSString *const HPBlockReasonDaily    = @"daily";
+NSString *const HPBlockReasonSchedule = @"schedule";
 
 NSString *const HPTickAddedKey   = @"added";
 NSString *const HPTickTotalKey   = @"total";
@@ -14,6 +29,123 @@ NSString *const HPTickEventsKey  = @"events";
 NSString *const HPTickIfNamesKey = @"ifNames";
 NSString *const HPTickDevicesKey = @"devices";
 NSString *const HPTickBlockedKey = @"blocked";
+NSString *const HPTickJoinedKey  = @"joined";
+NSString *const HPTickDailyKey   = @"dailyBlocked";
+
+#pragma mark - Days and schedules
+
+/// Always Gregorian, in the phone's own time zone: the day keys are stored, so
+/// they must not change meaning if the user switches calendar in Settings.
+static NSCalendar *HPLocalGregorian(void) {
+    NSCalendar *cal = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone localTimeZone];
+    return cal;
+}
+
+NSString *HPDayKey(NSDate *date) {
+    NSDateComponents *c = [HPLocalGregorian() components:(NSCalendarUnitYear | NSCalendarUnitMonth |
+                                                         NSCalendarUnitDay)
+                                                fromDate:date];
+    return [NSString stringWithFormat:@"%04ld-%02ld-%02ld", (long)c.year, (long)c.month, (long)c.day];
+}
+
+NSDate *HPDateForDayKey(NSString *key) {
+    int y = 0, m = 0, d = 0;
+    if (![key isKindOfClass:[NSString class]] ||
+        sscanf([key UTF8String], "%d-%d-%d", &y, &m, &d) != 3) return nil;
+    NSDateComponents *c = [NSDateComponents new];
+    c.year = y; c.month = m; c.day = d;
+    return [HPLocalGregorian() dateFromComponents:c];
+}
+
+NSInteger HPMinuteOfDay(NSDate *date) {
+    NSDateComponents *c = [HPLocalGregorian() components:(NSCalendarUnitHour | NSCalendarUnitMinute)
+                                                fromDate:date];
+    return c.hour * 60 + c.minute;
+}
+
+BOOL HPScheduleCovers(NSInteger from, NSInteger to, NSInteger minute) {
+    if (from == to) return NO;
+    if (from < to) return minute >= from && minute < to;
+    return minute >= from || minute < to;   // runs past midnight
+}
+
+BOOL HPScheduleForMac(NSDictionary *cfg, NSString *mac, NSInteger *from, NSInteger *to) {
+    NSDictionary *all = cfg[HPCfgSchedulesKey];
+    if (![all isKindOfClass:[NSDictionary class]]) return NO;
+    NSDictionary *one = all[mac];
+    if (![one isKindOfClass:[NSDictionary class]]) return NO;
+    id f = one[@"from"], t = one[@"to"];
+    if (![f isKindOfClass:[NSNumber class]] || ![t isKindOfClass:[NSNumber class]]) return NO;
+    NSInteger fv = [f integerValue], tv = [t integerValue];
+    if (fv < 0 || fv >= 1440 || tv < 0 || tv >= 1440 || fv == tv) return NO;
+    if (from) *from = fv;
+    if (to) *to = tv;
+    return YES;
+}
+
+static NSDictionary *HPCfgDict(NSDictionary *cfg, NSString *key) {
+    NSDictionary *d = cfg[key];
+    return [d isKindOfClass:[NSDictionary class]] ? d : @{};
+}
+
+static uint64_t HPGigabytes(double gb) {
+    return (uint64_t)(gb * 1024.0 * 1024.0 * 1024.0);
+}
+
+NSDictionary<NSString *, NSString *> *HPBlockReasons(NSDictionary *cfg,
+                                                     NSDictionary *seen,
+                                                     NSDictionary *known,
+                                                     NSDate *now) {
+    NSMutableDictionary<NSString *, NSString *> *reasons = [NSMutableDictionary dictionary];
+    if (![seen isKindOfClass:[NSDictionary class]]) seen = @{};
+    if (![known isKindOfClass:[NSDictionary class]]) known = @{};
+
+    // Least important first, so a stronger reason overwrites a weaker one: the
+    // page then says "blocked by you" rather than "bedtime" for a device that
+    // is both.
+    NSInteger minute = HPMinuteOfDay(now);
+    for (NSString *mac in HPCfgDict(cfg, HPCfgSchedulesKey)) {
+        NSInteger from = 0, to = 0;
+        if (HPScheduleForMac(cfg, mac, &from, &to) && HPScheduleCovers(from, to, minute)) {
+            reasons[mac] = HPBlockReasonSchedule;
+        }
+    }
+
+    NSString *today = HPDayKey(now);
+    NSDictionary *daily = HPCfgDict(cfg, HPCfgDailyLimitsKey);
+    for (NSString *mac in daily) {
+        double gb = [daily[mac] doubleValue];
+        if (gb <= 0) continue;
+        uint64_t used = [seen[mac][@"days"][today] unsignedLongLongValue];
+        if (used >= HPGigabytes(gb)) reasons[mac] = HPBlockReasonDaily;
+    }
+
+    NSDictionary *limits = HPCfgDict(cfg, HPCfgDeviceLimitsKey);
+    for (NSString *mac in limits) {
+        double gb = [limits[mac] doubleValue];
+        if (gb <= 0) continue;
+        if ([seen[mac][@"bytes"] unsignedLongLongValue] >= HPGigabytes(gb)) {
+            reasons[mac] = HPBlockReasonLimit;
+        }
+    }
+
+    NSDictionary *manual = HPCfgDict(cfg, HPCfgManualBlocksKey);
+    if ([cfg[HPCfgAskFirstKey] boolValue]) {
+        NSDictionary *approved = HPCfgDict(cfg, HPCfgApprovedKey);
+        for (NSString *mac in known) {
+            if (![known[mac] isKindOfClass:[NSDictionary class]]) continue;
+            if (![known[mac][@"pending"] boolValue]) continue;
+            if ([approved[mac] boolValue] || [manual[mac] boolValue]) continue;
+            reasons[mac] = HPBlockReasonPending;
+        }
+    }
+
+    for (NSString *mac in manual) {
+        if ([manual[mac] boolValue]) reasons[mac] = HPBlockReasonManual;
+    }
+    return reasons;
+}
 
 /// Zero the period, archiving what it held. Shared by the scheduled rollover
 /// and the manual reset so both leave identical state behind.
@@ -24,11 +156,23 @@ static void HPBeginNewPeriod(NSMutableDictionary *state, NSDate *now, NSInteger 
         NSDate *start = state[HPStPeriodStartKey];
         if (total > 0 && start) {
             NSMutableArray *history = [(state[HPStHistoryKey] ?: @[]) mutableCopy];
-            [history addObject:@{
+            NSMutableDictionary *entry = [@{
                 @"start" : start,
                 @"end"   : now,
                 @"bytes" : @(total),
-            }];
+            } mutableCopy];
+            // The period's days go with it, as one figure each, so a later
+            // version can chart a past period too.
+            NSDictionary *daily = state[HPStDailyKey];
+            if ([daily isKindOfClass:[NSDictionary class]] && daily.count) {
+                NSMutableDictionary *days = [NSMutableDictionary dictionary];
+                for (NSString *day in daily) {
+                    days[day] = @([daily[day][@"up"] unsignedLongLongValue] +
+                                  [daily[day][@"down"] unsignedLongLongValue]);
+                }
+                entry[@"days"] = days;
+            }
+            [history addObject:entry];
             // Keep a couple of years; the state file stays small and readable.
             while (history.count > 24) [history removeObjectAtIndex:0];
             state[HPStHistoryKey] = history;
@@ -43,6 +187,7 @@ static void HPBeginNewPeriod(NSMutableDictionary *state, NSDate *now, NSInteger 
     state[HPStWarnFiredKey]   = @NO;
     state[HPStLimitFiredKey]  = @NO;
     state[HPStDevicesSeenKey] = @{};
+    state[HPStDailyKey]       = @{};
     // Bytes still waiting for an owner were measured in the period just closed.
     [state removeObjectForKey:HPStPendingUpKey];
     [state removeObjectForKey:HPStPendingDownKey];
@@ -98,6 +243,7 @@ void HPAttributeToDevices(NSMutableDictionary *seen,
     if (HPApportion(*poolUp, wUp, n, gotUp))       *poolUp = 0;
     if (HPApportion(*poolDown, wDown, n, gotDown)) *poolDown = 0;
 
+    NSString *today = HPDayKey(now);
     for (size_t i = 0; i < n; i++) {
         NSMutableDictionary *record = [(seen[macs[i]] ?: @{}) mutableCopy];
         if (!record[@"first"]) record[@"first"] = now;
@@ -107,6 +253,14 @@ void HPAttributeToDevices(NSMutableDictionary *seen,
         record[@"up"]    = @(up);
         record[@"down"]  = @(down);
         record[@"bytes"] = @(up + down);
+        // The same bytes again under today's date, which is what the daily
+        // chart and the daily limit read. Summed over the days they come back
+        // to the period figure (from whenever daily figures began).
+        if (gotUp[i] + gotDown[i]) {
+            NSMutableDictionary *days = [(record[@"days"] ?: @{}) mutableCopy];
+            days[today] = @([days[today] unsignedLongLongValue] + gotUp[i] + gotDown[i]);
+            record[@"days"] = days;
+        }
         seen[macs[i]] = record;
     }
 }
@@ -184,8 +338,8 @@ static void HPFoldDaemonCounters(NSDictionary *counters, NSMutableDictionary *st
 }
 
 BOOL HPRepairTotals(NSMutableDictionary *state) {
-    if ([state[HPStSchemaKey] integerValue] >= kHPSchema) return NO;
-    state[HPStSchemaKey] = @(kHPSchema);
+    if ([state[HPStSchemaKey] integerValue] >= kHPSchemaRepair) return NO;
+    state[HPStSchemaKey] = @(kHPSchemaRepair);
     BOOL changed = NO;
 
     // The period. The upload/download split arrived in 0.7.0, so a period that
@@ -258,6 +412,57 @@ BOOL HPRepairTotals(NSMutableDictionary *state) {
     }
     state[HPStDevicesSeenKey] = seen;
     return changed;
+}
+
+/// First run of 0.8.0: every device already known counts as known, so nobody
+/// is announced as new and nobody is held for approval just for having been
+/// here before the update — including whoever is connected right now. Daily
+/// figures start from here; there is no way to recover the earlier days.
+static void HPSeedKnownDevices(NSMutableDictionary *state, NSDictionary *cfg,
+                               NSArray<NSDictionary *> *connected, NSDate *now) {
+    if ([state[HPStSchemaKey] integerValue] >= kHPSchemaKnown) return;
+    state[HPStSchemaKey] = @(kHPSchemaKnown);
+
+    NSMutableSet<NSString *> *macs = [NSMutableSet set];
+    NSDictionary *seen = state[HPStDevicesSeenKey];
+    if ([seen isKindOfClass:[NSDictionary class]]) [macs addObjectsFromArray:seen.allKeys];
+    for (NSString *key in @[ HPCfgNicknamesKey, HPCfgDeviceLimitsKey, HPCfgManualBlocksKey ]) {
+        [macs addObjectsFromArray:HPCfgDict(cfg, key).allKeys];
+    }
+    NSDictionary *counters = HPCopyDaemonCounters();
+    if (counters) [macs addObjectsFromArray:[counters[@"bytes"] allKeys]];
+    for (NSDictionary *dev in connected) {
+        if (dev[HPDevMacKey]) [macs addObject:dev[HPDevMacKey]];
+    }
+
+    NSMutableDictionary *known = [(state[HPStKnownKey] ?: @{}) mutableCopy];
+    for (NSString *mac in macs) {
+        if (known[mac]) continue;
+        NSMutableDictionary *entry = [@{ @"first" : now, @"last" : now, @"pending" : @NO } mutableCopy];
+        NSDictionary *record = [seen isKindOfClass:[NSDictionary class]] ? seen[mac] : nil;
+        if ([record isKindOfClass:[NSDictionary class]] && record[@"name"]) entry[@"name"] = record[@"name"];
+        known[mac] = entry;
+    }
+    state[HPStKnownKey] = known;
+    if (!state[HPStDailySinceKey]) state[HPStDailySinceKey] = now;
+    HPLog(@"known devices seeded with %lu from before this version", (unsigned long)known.count);
+}
+
+/// Keep the registry of known devices bounded.
+static void HPPruneKnown(NSMutableDictionary *known, NSDate *now) {
+    for (NSString *mac in known.allKeys) {
+        NSDate *last = known[mac][@"last"];
+        if ([last isKindOfClass:[NSDate class]] && [now timeIntervalSinceDate:last] > kHPKnownMaxAge) {
+            [known removeObjectForKey:mac];
+        }
+    }
+    if (known.count <= kHPKnownMax) return;
+    NSArray *byAge = [known.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSDate *la = known[a][@"last"] ?: [NSDate distantPast];
+        NSDate *lb = known[b][@"last"] ?: [NSDate distantPast];
+        return [la compare:lb];
+    }];
+    for (NSUInteger i = 0; i < byAge.count - kHPKnownMax; i++) [known removeObjectForKey:byAge[i]];
 }
 
 /// A content fingerprint of the state, ignoring the sample timestamp.
@@ -343,6 +548,20 @@ NSDictionary *HPTick(void) {
     state[HPStLastRawKey]    = lastRaw;
     state[HPStIfNamesKey]    = names;
 
+    // The same bytes by day, for the daily chart. Kept for this period only, so
+    // the days always add up to Used (from the day daily figures began).
+    NSString *today = HPDayKey(now);
+    if (addedUp + addedDown) {
+        NSMutableDictionary *daily = [(state[HPStDailyKey] ?: @{}) mutableCopy];
+        NSDictionary *day = daily[today];
+        daily[today] = @{
+            @"up"   : @([day[@"up"] unsignedLongLongValue] + addedUp),
+            @"down" : @([day[@"down"] unsignedLongLongValue] + addedDown),
+        };
+        state[HPStDailyKey] = daily;
+    }
+    if (!state[HPStDailySinceKey]) state[HPStDailySinceKey] = now;
+
     // --- devices -----------------------------------------------------------
     // Two lists, deliberately: the ARP table is what a device has *been* seen
     // at, and that is what the "seen this period" record wants — a name and an
@@ -350,6 +569,14 @@ NSDictionary *HPTick(void) {
     // narrower question, and only HPCopyPresentDevices() answers it, so the CLI
     // and the Settings pane cannot end up disagreeing about who is here.
     NSArray<NSDictionary *> *devices = HPCopyConnectedDevices(names);
+    HPSeedKnownDevices(state, cfg, devices, now);
+    NSMutableDictionary *known = [(state[HPStKnownKey] ?: @{}) mutableCopy];
+    BOOL askFirst = [cfg[HPCfgAskFirstKey] boolValue];
+    NSMutableArray<NSDictionary *> *joined = [NSMutableArray array];
+    // Where each device is RIGHT NOW, by the ARP table. A block is only ever
+    // put on one of these: an address remembered from earlier in the period
+    // may since have been handed to somebody else.
+    NSMutableDictionary<NSString *, NSString *> *arpIP = [NSMutableDictionary dictionary];
     NSMutableSet<NSString *> *presentMacs = [NSMutableSet set];
     for (NSDictionary *dev in HPCopyPresentDevices(names)) {
         if (dev[HPDevMacKey]) [presentMacs addObject:dev[HPDevMacKey]];
@@ -376,7 +603,46 @@ NSDictionary *HPTick(void) {
         record[@"name"] = entry[HPDevNameKey];
         if (dev[HPDevIPKey]) record[@"ip"] = dev[HPDevIPKey];
         seen[mac] = record;
+        if (dev[HPDevIPKey]) arpIP[mac] = dev[HPDevIPKey];
+
+        // First sight ever: announce it, and with "Ask Before Allowing" on,
+        // hold it until it is allowed. Remembered across periods, so a device
+        // is new once, not every month.
+        NSMutableDictionary *k = [known[mac] mutableCopy];
+        if (!k) {
+            k = [@{ @"first" : now, @"pending" : @(askFirst) } mutableCopy];
+            [joined addObject:@{
+                @"mac"     : mac,
+                @"name"    : entry[HPDevNameKey] ?: mac,
+                @"ip"      : dev[HPDevIPKey] ?: @"",
+                @"pending" : @(askFirst),
+            }];
+            HPLog(@"new device %@ (%@)%@", entry[HPDevNameKey], mac,
+                  askFirst ? @", held for approval" : @"");
+        }
+        // "last" only moves hourly: it is for forgetting long-gone devices, and
+        // updating it every sample would rewrite the state file for nothing.
+        NSDate *last = k[@"last"];
+        if (!last || [now timeIntervalSinceDate:last] > 3600) k[@"last"] = now;
+        if (entry[HPDevNameKey]) k[@"name"] = entry[HPDevNameKey];
+        if (![k isEqualToDictionary:known[mac] ?: @{}]) known[mac] = k;
     }
+
+    // A decision on a held device, made in Settings or on its alert, ends the
+    // wait for good: it stays allowed even if the approval is later cleared.
+    NSDictionary *approved = cfg[HPCfgApprovedKey];
+    NSDictionary *manualNow = cfg[HPCfgManualBlocksKey];
+    for (NSString *mac in known.allKeys) {
+        if (![known[mac][@"pending"] boolValue]) continue;
+        if ([approved[mac] boolValue] || [manualNow[mac] boolValue]) {
+            NSMutableDictionary *k = [known[mac] mutableCopy];
+            k[@"pending"] = @NO;
+            known[mac] = k;
+        }
+    }
+    HPPruneKnown(known, now);
+    state[HPStKnownKey] = known;
+    if (joined.count) events |= HPTickEventJoined;
 
     // --- per-device bytes ---------------------------------------------------
     // Two instruments, each used for what it is good at. This tick's hotspot
@@ -437,60 +703,68 @@ NSDictionary *HPTick(void) {
     state[HPStDevicesSeenKey] = seen;
     state[HPStUpdatedKey]     = now;
 
-    // --- per-device limits --------------------------------------------------
+    // --- blocking -----------------------------------------------------------
     // Decided here because this is where period totals live, and published as a
     // file for the daemon, which is the only thing that can install a route.
-    // A device drops off the list the moment it is under its cap again — which
-    // is what unblocks it after a reset or a raised limit, with no extra state.
-    NSDictionary *deviceLimits = cfg[HPCfgDeviceLimitsKey];
-    NSDictionary *manualBlocks = cfg[HPCfgManualBlocksKey];
+    // Every reason feeds the one reject-route mechanism: blocked by hand, held
+    // for approval, over the period limit, over today's limit, or inside its
+    // blocked hours. A device drops off the list the moment no reason applies
+    // — which is what releases it at midnight, at the end of its blocked hours,
+    // after a reset or a raised limit, with no extra state.
+    NSDictionary<NSString *, NSString *> *reasons = HPBlockReasons(cfg, seen, known, now);
+    NSArray *previouslyBlocked = state[HPStBlockedMacsKey] ?: @[];
+    NSMutableDictionary *dailyFired = [NSMutableDictionary dictionary];
+    NSDictionary *firedBefore = state[HPStDailyFiredKey];
     NSMutableArray *blocked = [NSMutableArray array];
     NSMutableArray *newlyBlocked = [NSMutableArray array];
-    NSArray *previouslyBlocked = state[HPStBlockedMacsKey] ?: @[];
+    NSMutableArray *newlyDaily = [NSMutableArray array];
 
-    // Two independent reasons a device is cut off: it went over its own data
-    // limit, or the user blocked it by hand from its page. They feed the same
-    // reject-route mechanism, but only a limit block raises a popup — a manual
-    // block was the user's own doing and needs no announcing.
-    NSMutableSet<NSString *> *macsToBlock = [NSMutableSet set];
-    NSMutableSet<NSString *> *limitBlocked = [NSMutableSet set];
+    // Addresses held by a device on the network now, so a remembered address
+    // is never used when somebody else has it.
+    NSSet *addressesInUse = [NSSet setWithArray:arpIP.allValues];
 
-    if ([deviceLimits isKindOfClass:[NSDictionary class]]) {
-        for (NSString *mac in deviceLimits) {
-            double limitGB = [deviceLimits[mac] doubleValue];
-            if (limitGB <= 0) continue;
-            uint64_t used = [seen[mac][@"bytes"] unsignedLongLongValue];
-            if (used < (uint64_t)(limitGB * 1024.0 * 1024.0 * 1024.0)) continue;
-            [macsToBlock addObject:mac];
-            [limitBlocked addObject:mac];
+    for (NSString *mac in [reasons.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        NSString *reason = reasons[mac];
+        NSString *name = seen[mac][@"name"] ?: known[mac][@"name"] ?: mac;
+
+        // The daily alert is owed once per device per day, whether or not the
+        // device is on the network to be blocked right now.
+        if ([reason isEqualToString:HPBlockReasonDaily]) {
+            if (![firedBefore[mac] isEqual:today]) [newlyDaily addObject:name];
+            dailyFired[mac] = today;
         }
-    }
-    if ([manualBlocks isKindOfClass:[NSDictionary class]]) {
-        for (NSString *mac in manualBlocks) {
-            if ([manualBlocks[mac] boolValue]) [macsToBlock addObject:mac];
-        }
-    }
 
-    for (NSString *mac in macsToBlock) {
-        NSString *ip = seen[mac][@"ip"];
-        if (!ip) continue;   // no address on record yet — nothing to route-block
+        NSString *ip = arpIP[mac];
+        if (!ip) {
+            NSString *remembered = seen[mac][@"ip"];
+            if (remembered && ![addressesInUse containsObject:remembered]) ip = remembered;
+        }
+        if (!ip) continue;   // no address to route-block
         [blocked addObject:@{ @"mac" : mac, @"ip" : ip }];
 
-        // Announce only a device the limit newly cut off, never a manual block.
-        if ([limitBlocked containsObject:mac] && ![previouslyBlocked containsObject:mac]) {
-            [newlyBlocked addObject:seen[mac][@"name"] ?: mac];
+        // Announce only a device the period limit newly cut off. The others
+        // are the user's own doing (a block, a schedule), or have their own
+        // alert (held devices, daily limits).
+        if ([reason isEqualToString:HPBlockReasonLimit] && ![previouslyBlocked containsObject:mac]) {
+            [newlyBlocked addObject:name];
         }
     }
 
     NSArray *blockedMacs = [blocked valueForKey:@"mac"];
-    state[HPStBlockedMacsKey] = blockedMacs;
+    state[HPStBlockedMacsKey]  = blockedMacs;
+    state[HPStBlockReasonsKey] = reasons;
+    state[HPStDailyFiredKey]   = dailyFired;
     if (newlyBlocked.count) events |= HPTickEventBlocked;
+    if (newlyDaily.count) events |= HPTickEventDailyLimit;
 
-    // Only rewrite the file when the set actually changes; the daemon reads it
-    // on every pass.
-    if (![blockedMacs isEqualToArray:previouslyBlocked]) {
+    // Only rewrite the file when what it says actually changes (a device moving
+    // to a new address counts); the daemon reads it on every pass. Then say so,
+    // so the daemon applies it now rather than on its next pass.
+    NSArray *onFile = [NSDictionary dictionaryWithContentsOfFile:HPBlocklistPath()][@"blocked"];
+    if (![onFile isKindOfClass:[NSArray class]] || ![onFile isEqualToArray:blocked]) {
         [@{ @"blocked" : blocked, @"updated" : now } writeToFile:HPBlocklistPath()
                                                       atomically:YES];
+        notify_post(HPBlocklistChangedNotification);
         HPLog(@"blocklist now %@", blockedMacs.count ? [blockedMacs componentsJoinedByString:@", "]
                                                      : @"(empty)");
     }
@@ -529,6 +803,8 @@ NSDictionary *HPTick(void) {
         HPTickIfNamesKey : names,
         HPTickDevicesKey : devicesNow,
         HPTickBlockedKey : newlyBlocked,
+        HPTickJoinedKey  : joined,
+        HPTickDailyKey   : newlyDaily,
     };
 }
 
@@ -575,6 +851,15 @@ NSString *HPStatusReport(void) {
                         [(d[HPDevIPKey] ?: @"?") UTF8String],
                         d[HPDevMacKey] ?: @"?"];
     }
+
+    NSDictionary *reasons = state[HPStBlockReasonsKey] ?: @{};
+    if (reasons.count) {
+        [s appendFormat:@"\nCut off (%lu):\n", (unsigned long)reasons.count];
+        for (NSString *mac in reasons) [s appendFormat:@"  %@  %@\n", mac, reasons[mac]];
+    }
+    [s appendFormat:@"\nKnown devices    : %lu (Ask Before Allowing %@)\n",
+                    (unsigned long)[state[HPStKnownKey] count],
+                    [cfg[HPCfgAskFirstKey] boolValue] ? @"on" : @"off"];
 
     NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
     [s appendFormat:@"\nSeen this period (%lu):\n", (unsigned long)seen.count];

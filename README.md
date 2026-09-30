@@ -35,8 +35,9 @@ device names from the hotspot's own DHCP leases; the connected list from the ARP
 table, with a departure judged over a steady four-minute window so a quiet
 device doesn't flicker offline. A BPF tap that copies only each frame's 14-byte
 Ethernet header says which device moved how much, and the period total is shared
-out in those proportions — so devices always add up to Used. Blocking is a host
-reject route for that client — never outside the hotspot's own subnet.
+out in those proportions — so devices always add up to Used. Blocking — by hand,
+over a limit, during blocked hours, or while a new device waits for approval — is
+a host reject route for that client, never outside the hotspot's own subnet.
 
 ## Privacy
 
@@ -75,6 +76,23 @@ docs/      the generated APT repo, served by GitHub Pages
 ```
 
 ## Changelog
+
+**0.8.0**
+- **New devices: alerts and approval.** The first time a device ever joins your
+  hotspot you get an alert with a Block button. Turn on **Ask Before Allowing**
+  and a new device gets no internet until you tap Allow — on the alert, or on
+  its page. Devices that had already joined before the update are not affected.
+- **Blocked hours and daily limits.** Each device's page can cut it off during
+  set hours every day (22:00 until 07:00 runs overnight), and give it a
+  **Daily Limit** that lifts at midnight.
+- **Daily usage.** A day-by-day chart of the billing period, for the hotspot
+  and for each device; tap a bar to read its day. The days add up to Used.
+- **Live speed.** Download and upload speed for the hotspot, and for each
+  device that is moving data, right in the device list.
+- Blocking takes effect within a second or two: the helper now wakes the
+  moment the blocklist changes instead of on its next pass.
+- A block is only ever placed on the address a device holds right now, never
+  one it held earlier that may since belong to somebody else.
 
 **0.7.1**
 - **Usage figures that add up.** Per-device totals could run to several times

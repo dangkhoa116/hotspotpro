@@ -31,11 +31,20 @@ extern NSString *const HPCfgWarnPercentKey; // int,    default 80
 extern NSString *const HPCfgNicknamesKey;   // dict mac -> user-set name
 extern NSString *const HPCfgDeviceLimitsKey;// dict mac -> GB (double), per device
 extern NSString *const HPCfgManualBlocksKey;// dict mac -> BOOL, cut off by hand
+extern NSString *const HPCfgAlertJoinsKey;   // BOOL, default YES: alert when a new device joins
+extern NSString *const HPCfgAskFirstKey;     // BOOL, default NO: hold new devices until allowed
+extern NSString *const HPCfgApprovedKey;     // dict mac -> BOOL, allowed after being held
+extern NSString *const HPCfgSchedulesKey;    // dict mac -> {from, to}, minutes past midnight
+extern NSString *const HPCfgDailyLimitsKey;  // dict mac -> GB (double), per device per day
 
 /// Devices the collector has decided are over their own limit, written for the
 /// root daemon to enforce. The daemon is the only thing that can install a
 /// route, and the collector is the only thing that knows the period totals.
 NSString *HPBlocklistPath(void);
+
+/// Read-modify-write of the config file. Settings and the SpringBoard alerts
+/// both change it, always through here.
+void HPConfigUpdate(void (^change)(NSMutableDictionary *cfg));
 
 /// Current config with defaults filled in. Re-read from disk each call: cheap,
 /// and it means an edit from Settings is picked up without any invalidation.
@@ -52,6 +61,10 @@ extern const char *const HPTickRequestNotification;
 
 /// Ask the collector to sample immediately.
 void HPPostTickRequest(void);
+
+/// Posted by the collector each time it rewrites the blocklist, so the daemon
+/// applies it at once instead of on its next pass.
+extern const char *const HPBlocklistChangedNotification;
 
 #pragma mark - State
 
@@ -82,6 +95,15 @@ extern NSString *const HPStPendingDownKey;  //   hotspot bytes not yet handed
                                             //   to a device
 extern NSString *const HPStPendingSinceKey; // NSDate, when that began waiting
 extern NSString *const HPStSchemaKey;       // int, which one-time repairs ran
+extern NSString *const HPStKnownKey;        // dict mac -> {first, last, name, ip,
+                                            //   pending}: every device ever seen,
+                                            //   kept across periods
+extern NSString *const HPStDailyKey;        // dict "yyyy-MM-dd" -> {up, down},
+                                            //   this period, hotspot-wide
+extern NSString *const HPStDailySinceKey;   // NSDate, when daily figures began
+extern NSString *const HPStBlockReasonsKey; // dict mac -> why it is cut off
+extern NSString *const HPStDailyFiredKey;   // dict mac -> day its daily-limit
+                                            //   alert was shown
 
 NSMutableDictionary *HPStateLoad(void);
 

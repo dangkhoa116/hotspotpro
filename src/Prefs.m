@@ -20,9 +20,15 @@ NSString *const HPCfgWarnPercentKey = @"warnPercent";
 NSString *const HPCfgNicknamesKey    = @"nicknames";
 NSString *const HPCfgDeviceLimitsKey = @"deviceLimits";
 NSString *const HPCfgManualBlocksKey = @"manualBlocks";
+NSString *const HPCfgAlertJoinsKey   = @"alertJoins";
+NSString *const HPCfgAskFirstKey     = @"askFirst";
+NSString *const HPCfgApprovedKey     = @"approved";
+NSString *const HPCfgSchedulesKey    = @"schedules";
+NSString *const HPCfgDailyLimitsKey  = @"dailyLimits";
 
 NSString *const HPPrefsChangedNotification = @"com.dangkhoa.hotspotpro/prefschanged";
 const char *const HPTickRequestNotification = "com.dangkhoa.hotspotpro/tick";
+const char *const HPBlocklistChangedNotification = "com.dangkhoa.hotspotpro/blocklist";
 
 void HPPostTickRequest(void) {
     notify_post(HPTickRequestNotification);
@@ -52,6 +58,11 @@ NSString *const HPStPendingUpKey    = @"pendingUp";
 NSString *const HPStPendingDownKey  = @"pendingDown";
 NSString *const HPStPendingSinceKey = @"pendingSince";
 NSString *const HPStSchemaKey       = @"schema";
+NSString *const HPStKnownKey        = @"knownDevices";
+NSString *const HPStDailyKey        = @"daily";
+NSString *const HPStDailySinceKey   = @"dailySince";
+NSString *const HPStBlockReasonsKey = @"blockReasons";
+NSString *const HPStDailyFiredKey   = @"dailyFired";
 
 #pragma mark - Paths
 
@@ -95,6 +106,11 @@ NSDictionary *HPConfig(void) {
         HPCfgNicknamesKey    : @{},
         HPCfgDeviceLimitsKey : @{},
         HPCfgManualBlocksKey : @{},
+        HPCfgAlertJoinsKey   : @YES,
+        HPCfgAskFirstKey     : @NO,
+        HPCfgApprovedKey     : @{},
+        HPCfgSchedulesKey    : @{},
+        HPCfgDailyLimitsKey  : @{},
     } mutableCopy];
     if ([onDisk isKindOfClass:[NSDictionary class]]) [cfg addEntriesFromDictionary:onDisk];
 
@@ -106,6 +122,14 @@ NSDictionary *HPConfig(void) {
     if ([cfg[HPCfgLimitGBKey] doubleValue] < 0) cfg[HPCfgLimitGBKey] = @0.0;
 
     return cfg;
+}
+
+void HPConfigUpdate(void (^change)(NSMutableDictionary *cfg)) {
+    NSDictionary *onDisk = [NSDictionary dictionaryWithContentsOfFile:HPConfigPath()];
+    NSMutableDictionary *cfg = [onDisk isKindOfClass:[NSDictionary class]]
+                                   ? [onDisk mutableCopy] : [NSMutableDictionary dictionary];
+    change(cfg);
+    [cfg writeToFile:HPConfigPath() atomically:YES];
 }
 
 #pragma mark - State

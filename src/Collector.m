@@ -750,11 +750,13 @@ NSDictionary<NSString *, NSDictionary<NSString *, NSNumber *> *> *HPCopyDaemonCo
 
     NSDictionary *up = file[@"uploadByMac"];
     NSDictionary *down = file[@"downloadByMac"];
-    return @{
+    NSMutableDictionary *out = [@{
         @"bytes" : bytes,
         @"up"    : [up isKindOfClass:[NSDictionary class]] ? up : @{},
         @"down"  : [down isKindOfClass:[NSDictionary class]] ? down : @{},
-    };
+    } mutableCopy];
+    if ([file[@"updated"] isKindOfClass:[NSDate class]]) out[@"updated"] = file[@"updated"];
+    return out;
 }
 
 NSDictionary *HPCopyDaemonStatus(void) {
@@ -820,4 +822,13 @@ NSString *HPFormatBytes(uint64_t bytes) {
     if (b < 1024.0 * 1024.0 * 1024.0)
         return [NSString stringWithFormat:@"%.1f MB", b / (1024.0 * 1024.0)];
     return [NSString stringWithFormat:@"%.2f GB", b / (1024.0 * 1024.0 * 1024.0)];
+}
+
+NSString *HPFormatRate(uint64_t bytesPerSecond) {
+    // Bits, in decimal units: the way a speed test or a carrier quotes it.
+    double bits = (double)bytesPerSecond * 8.0;
+    if (bits < 1000.0 * 1000.0) return [NSString stringWithFormat:@"%.0f Kbps", bits / 1000.0];
+    double mbps = bits / (1000.0 * 1000.0);
+    return mbps < 100.0 ? [NSString stringWithFormat:@"%.1f Mbps", mbps]
+                        : [NSString stringWithFormat:@"%.0f Mbps", mbps];
 }

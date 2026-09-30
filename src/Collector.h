@@ -279,7 +279,8 @@ NSArray<NSDictionary *> *HPFilterPresentDevices(NSArray<NSDictionary *> *arp,
 /// three dictionaries always agree with each other. Keys of the result:
 /// @"bytes", @"up", @"down", each a dict of MAC -> cumulative bytes. Upload is
 /// what the client sent, download what it received; the directional dicts are
-/// empty for a file written before 0.7.0.
+/// empty for a file written before 0.7.0. @"updated" is the NSDate of the
+/// daemon's flush that wrote them, when the file carries one.
 ///
 /// The values are cumulative for the life of the daemon's file, so callers take
 /// deltas rather than reading them as per-period figures.
@@ -304,6 +305,9 @@ NSString *HPDeviceDisplayName(NSString *mac, NSString *dhcpName, NSString *nickn
 
 /// "4.72 GB", "812 MB" — for display.
 NSString *HPFormatBytes(uint64_t bytes);
+
+/// "12.4 Mbps", "850 Kbps" — a speed, in the bits-per-second everyone quotes.
+NSString *HPFormatRate(uint64_t bytesPerSecond);
 
 /// Normalise a MAC to lowercase, zero-padded, colon-separated. The lease file
 /// writes them unpadded and prefixed with the hardware type ("1,1e:7:67:bb:5b:3f").

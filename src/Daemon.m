@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <notify.h>
 
 #pragma mark - BPF, declared here because the SDK ships no <net/bpf.h>
 
@@ -523,6 +524,13 @@ static void HPConsume(const char *buf, ssize_t len, NSString *bridgeMac) {
 
 #pragma mark - Main loop
 
+/// Empty the blocklist notification's descriptor. Each post arrives as a 4-byte
+/// token; what matters is only that one came, and that the queue is drained.
+static void HPDrainNotify(int nfd) {
+    int token;
+    while (read(nfd, &token, sizeof(token)) == sizeof(token)) { }
+}
+
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         gBytesByMac = [NSMutableDictionary dictionary];
@@ -581,6 +589,19 @@ int main(int argc, char *argv[]) {
         if (rs < 0) {
             HPDaemonLog(@"route socket: %s — falling back to polling",
                         strerror(errno));
+        }
+
+        // The collector posts this each time it rewrites the blocklist. Waiting
+        // on it alongside everything else means a block, a release or a held
+        // device takes effect at once, rather than on the next pass up to five
+        // seconds later. Without it the loop still picks changes up, just later.
+        int nfd = -1, ntoken = 0;
+        if (notify_register_file_descriptor(HPBlocklistChangedNotification, &nfd, 0,
+                                            &ntoken) == NOTIFY_STATUS_OK) {
+            fcntl(nfd, F_SETFL, fcntl(nfd, F_GETFL) | O_NONBLOCK);
+        } else {
+            nfd = -1;
+            HPDaemonLog(@"blocklist notification unavailable; applying on each pass");
         }
 
         int fd = -1;
@@ -656,9 +677,15 @@ int main(int argc, char *argv[]) {
                         fd_set rfds;
                         FD_ZERO(&rfds);
                         FD_SET(rs, &rfds);
+                        int top = rs;
+                        if (nfd >= 0) {
+                            FD_SET(nfd, &rfds);
+                            if (nfd > top) top = nfd;
+                        }
                         struct timeval tv = { .tv_sec = 60, .tv_usec = 0 };
-                        if (select(rs + 1, &rfds, NULL, NULL, &tv) > 0) {
-                            HPDrainRouteSocket(rs);
+                        if (select(top + 1, &rfds, NULL, NULL, &tv) > 0) {
+                            if (FD_ISSET(rs, &rfds)) HPDrainRouteSocket(rs);
+                            if (nfd >= 0 && FD_ISSET(nfd, &rfds)) HPDrainNotify(nfd);
                         }
                     } else {
                         sleep(15);   // no routing socket; fall back to polling
@@ -674,6 +701,10 @@ int main(int argc, char *argv[]) {
                     FD_SET(rs, &readfds);
                     if (rs > maxfd) maxfd = rs;
                 }
+                if (nfd >= 0) {
+                    FD_SET(nfd, &readfds);
+                    if (nfd > maxfd) maxfd = nfd;
+                }
                 // 5s rather than 1s: with immediate mode off this only governs
                 // how often a partly-filled buffer is drained, and waking five
                 // times less often while tethering costs nothing but latency.
@@ -686,6 +717,11 @@ int main(int argc, char *argv[]) {
                 // of up to five seconds later.
                 if (ready > 0 && rs >= 0 && FD_ISSET(rs, &readfds)) {
                     HPDrainRouteSocket(rs);
+                }
+                // Nothing to do here but drain: the blocklist is applied at the
+                // top of the loop, which this wake-up brings round at once.
+                if (ready > 0 && nfd >= 0 && FD_ISSET(nfd, &readfds)) {
+                    HPDrainNotify(nfd);
                 }
 
                 if (ready > 0 && FD_ISSET(fd, &readfds)) {

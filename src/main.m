@@ -318,6 +318,91 @@ static int HPCommandSelftest(void) {
           [old[HPStDevicesSeenKey][@"ipad"][@"bytes"] unsignedLongLongValue], 1);
     check(@"the repair runs once", HPRepairTotals(old), 0);
 
+    // --- 0.8.0: days, blocked hours, approval, daily limits --------------------
+    HPPrint(@"\n=== daily figures ===");
+    NSMutableDictionary *byDay = [NSMutableDictionary dictionary];
+    uint64_t dUp = 0, dDown = 900;
+    HPAttributeToDevices(byDay, @{}, @{ @"a" : @2, @"b" : @1 }, &dUp, &dDown, when);
+    NSString *whenKey = HPDayKey(when);
+    check(@"a device's day holds what it was given", [byDay[@"a"][@"days"][whenKey] unsignedLongLongValue], 600);
+    check(@"and its days add up to its total",
+          [byDay[@"a"][@"days"][whenKey] unsignedLongLongValue] + [byDay[@"b"][@"days"][whenKey] unsignedLongLongValue], 900);
+    check(@"a day key reads back as that day",
+          [HPDayKey(HPDateForDayKey(whenKey)) isEqualToString:whenKey], 1);
+    check(@"a malformed day key is refused", HPDateForDayKey(@"not a day") == nil, 1);
+
+    HPPrint(@"\n=== blocked hours ===");
+    const NSInteger H = 60;
+    check(@"22:00-07:00 covers 23:30", HPScheduleCovers(22 * H, 7 * H, 23 * H + 30), 1);
+    check(@"22:00-07:00 covers 06:59", HPScheduleCovers(22 * H, 7 * H, 6 * H + 59), 1);
+    check(@"22:00-07:00 ends at 07:00", HPScheduleCovers(22 * H, 7 * H, 7 * H), 0);
+    check(@"22:00-07:00 leaves noon alone", HPScheduleCovers(22 * H, 7 * H, 12 * H), 0);
+    check(@"09:00-17:00 covers 09:00", HPScheduleCovers(9 * H, 17 * H, 9 * H), 1);
+    check(@"09:00-17:00 leaves 17:00 alone", HPScheduleCovers(9 * H, 17 * H, 17 * H), 0);
+    check(@"equal ends cover nothing", HPScheduleCovers(8 * H, 8 * H, 8 * H), 0);
+
+    HPPrint(@"\n=== who is cut off, and why ===");
+    NSCalendar *gregorian = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    gregorian.timeZone = [NSTimeZone localTimeZone];
+    NSDateComponents *nc2 = [NSDateComponents new];
+    nc2.year = 2026; nc2.month = 9; nc2.day = 30; nc2.hour = 23; nc2.minute = 15;
+    NSDate *night = [gregorian dateFromComponents:nc2];
+    NSString *nightKey = HPDayKey(night);
+    const uint64_t GiB = 1024ULL * 1024 * 1024;
+    NSDictionary *rules = @{
+        HPCfgAskFirstKey     : @YES,
+        HPCfgApprovedKey     : @{ @"allowed" : @YES },
+        HPCfgManualBlocksKey : @{ @"byhand" : @YES, @"held-then-blocked" : @YES },
+        HPCfgDeviceLimitsKey : @{ @"overcap" : @1, @"undercap" : @1 },
+        HPCfgDailyLimitsKey  : @{ @"overday" : @0.5, @"underday" : @0.5 },
+        HPCfgSchedulesKey    : @{ @"bedtime" : @{ @"from" : @(22 * H), @"to" : @(7 * H) },
+                                  @"daytime" : @{ @"from" : @(9 * H), @"to" : @(17 * H) },
+                                  @"broken"  : @{ @"from" : @(22 * H) },
+                                  @"overcap" : @{ @"from" : @(22 * H), @"to" : @(7 * H) } },
+    };
+    NSDictionary *periodSeen = @{
+        @"overcap"  : @{ @"bytes" : @(2 * GiB) },
+        @"undercap" : @{ @"bytes" : @(GiB / 2) },
+        @"overday"  : @{ @"bytes" : @(3 * GiB), @"days" : @{ nightKey : @(GiB), @"2026-09-29" : @(2 * GiB) } },
+        @"underday" : @{ @"bytes" : @(3 * GiB), @"days" : @{ nightKey : @(GiB / 4), @"2026-09-29" : @(2 * GiB) } },
+    };
+    NSDictionary *registry = @{
+        @"held"              : @{ @"pending" : @YES },
+        @"allowed"           : @{ @"pending" : @YES },
+        @"held-then-blocked" : @{ @"pending" : @YES },
+        @"old"               : @{ @"pending" : @NO },
+    };
+    __block NSDictionary *why = HPBlockReasons(rules, periodSeen, registry, night);
+    void (^reason)(NSString *, NSString *, NSString *) = ^(NSString *what, NSString *mac, NSString *want) {
+        NSString *got = why[mac];
+        if ((got == nil && want == nil) || [got isEqualToString:want]) {
+            HPPrint(@"  ok    %@ (%@)", what, got ?: @"allowed");
+        } else {
+            HPPrint(@"  FAIL  %@: got %@, want %@", what, got ?: @"allowed", want ?: @"allowed");
+            failures++;
+        }
+    };
+    reason(@"a new device is held while Ask Before Allowing is on", @"held", HPBlockReasonPending);
+    reason(@"an allowed one is not", @"allowed", nil);
+    reason(@"a held device blocked by hand reads as blocked by hand", @"held-then-blocked", HPBlockReasonManual);
+    reason(@"a device known from before is not held", @"old", nil);
+    reason(@"a hand block applies", @"byhand", HPBlockReasonManual);
+    reason(@"over the period limit", @"overcap", HPBlockReasonLimit);
+    reason(@"under the period limit", @"undercap", nil);
+    reason(@"over today's limit", @"overday", HPBlockReasonDaily);
+    reason(@"yesterday's use does not count against today", @"underday", nil);
+    reason(@"inside overnight blocked hours", @"bedtime", HPBlockReasonSchedule);
+    reason(@"outside daytime blocked hours", @"daytime", nil);
+    reason(@"half a schedule blocks nothing", @"broken", nil);
+    NSMutableDictionary *relaxed = [rules mutableCopy];
+    relaxed[HPCfgAskFirstKey] = @NO;
+    why = HPBlockReasons(relaxed, periodSeen, registry, night);
+    reason(@"with Ask Before Allowing off, nobody is held", @"held", nil);
+
+    HPPrint(@"\n=== speed ===");
+    check(@"12.4 Mbps reads as such", [HPFormatRate(1550000) isEqualToString:@"12.4 Mbps"], 1);
+    check(@"a trickle reads in Kbps", [HPFormatRate(100000) isEqualToString:@"800 Kbps"], 1);
+
     HPPrint(@"\n=== period maths ===");
     NSCalendar *cal = [NSCalendar currentCalendar];
     NSDateComponents *c = [NSDateComponents new];

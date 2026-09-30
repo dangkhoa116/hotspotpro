@@ -13,6 +13,8 @@ typedef NS_OPTIONS(NSUInteger, HPTickEvents) {
     HPTickEventRolledOver = 1 << 2, // the billing period rolled over
     HPTickEventReset      = 1 << 3, // the UI asked for a manual reset
     HPTickEventBlocked    = 1 << 4, // a device crossed its own limit
+    HPTickEventJoined     = 1 << 5, // a device never seen before joined
+    HPTickEventDailyLimit = 1 << 6, // a device crossed its daily limit
 };
 
 // Keys in the dictionary HPTick() returns.
@@ -22,6 +24,18 @@ extern NSString *const HPTickEventsKey;   // NSNumber, HPTickEvents bitmask
 extern NSString *const HPTickIfNamesKey;  // NSArray, interfaces counted
 extern NSString *const HPTickDevicesKey;  // NSArray, devices connected right now
 extern NSString *const HPTickBlockedKey;  // NSArray of names newly blocked
+extern NSString *const HPTickJoinedKey;   // NSArray of {mac, name, ip, pending},
+                                          //   devices seen for the first time
+extern NSString *const HPTickDailyKey;    // NSArray of names newly over their
+                                          //   daily limit
+
+// Why a device is cut off, as stored under HPStBlockReasonsKey. When several
+// apply, the first in this list is the one recorded.
+extern NSString *const HPBlockReasonManual;   // blocked by hand from its page
+extern NSString *const HPBlockReasonPending;  // new, waiting to be allowed
+extern NSString *const HPBlockReasonLimit;    // over its limit for the period
+extern NSString *const HPBlockReasonDaily;    // over its limit for today
+extern NSString *const HPBlockReasonSchedule; // inside its blocked hours
 
 /// Take one sample: read counters, fold in the delta, roll the period over if
 /// due, refresh the device roster, decide which notifications are owed, and
@@ -66,3 +80,32 @@ void HPAttributeToDevices(NSMutableDictionary *seen,
 /// whose sum ran past the hotspot total back to their share of it. Returns YES
 /// if it changed anything; a no-op once it has run.
 BOOL HPRepairTotals(NSMutableDictionary *state);
+
+#pragma mark - Days, schedules and blocking (exposed for selftest)
+
+/// "2026-09-30" for the local calendar day `date` falls on. The key of the
+/// daily figures, and sortable as a string.
+NSString *HPDayKey(NSDate *date);
+
+/// Local midnight at the start of a day key, or nil for a malformed key.
+NSDate *HPDateForDayKey(NSString *key);
+
+/// Minutes past local midnight, 0 ... 1439.
+NSInteger HPMinuteOfDay(NSDate *date);
+
+/// Whether blocked hours running from `from` to `to` (minutes past midnight)
+/// cover `minute`. A range whose end is earlier than its start runs overnight:
+/// 22:00 to 07:00 covers 23:30 and 06:59, not 07:00. Equal ends cover nothing.
+BOOL HPScheduleCovers(NSInteger from, NSInteger to, NSInteger minute);
+
+/// The blocked hours set for a device in `cfg`, if it has a usable pair.
+BOOL HPScheduleForMac(NSDictionary *cfg, NSString *mac, NSInteger *from, NSInteger *to);
+
+/// Every device that should be cut off right now, and why (one of the
+/// HPBlockReason constants). `seen` is this period's per-device record, whose
+/// "days" give today's use; `known` is the registry of every device ever seen,
+/// whose "pending" marks one still waiting to be allowed.
+NSDictionary<NSString *, NSString *> *HPBlockReasons(NSDictionary *cfg,
+                                                     NSDictionary *seen,
+                                                     NSDictionary *known,
+                                                     NSDate *now);

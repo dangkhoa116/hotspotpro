@@ -12,10 +12,12 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #include <notify.h>
+#include <sys/stat.h>
 #import "Collector.h"
 #import "Prefs.h"
 #import "Tracker.h"
 #import "PSHeaders.h"
+#import "Apportion.h"
 #pragma mark - Settings helper (Preferences)
 
 /// How many disconnected devices the pane will list. iOS caps concurrent
@@ -35,6 +37,234 @@ static NSString *const kHPDonateURL = @HP_DONATE_URL;
 
 static NSArray *HPBuildDeviceRows(void);
 static void HPReloadValues(PSListController *pane);
+
+/// The state file, parsed once per change rather than once per row.
+///
+/// Every getter used to re-read and re-parse the whole file, and a pane
+/// refreshing every 3s calls dozens of them. The file now also carries each
+/// device's daily figures, so it is re-parsed only when it has actually been
+/// replaced — the collector always writes it by rename, which changes the
+/// inode. Settings calls this on the main thread only. Read-only: the one
+/// place the UI writes state (a reset request) loads its own mutable copy.
+static NSDictionary *HPUIState(void) {
+    static NSDictionary *cached;
+    static struct stat cachedStat;
+    struct stat st;
+    if (stat([HPStatePath() fileSystemRepresentation], &st) != 0) return cached ?: @{};
+    if (cached && st.st_ino == cachedStat.st_ino && st.st_size == cachedStat.st_size &&
+        st.st_mtimespec.tv_sec == cachedStat.st_mtimespec.tv_sec &&
+        st.st_mtimespec.tv_nsec == cachedStat.st_mtimespec.tv_nsec) {
+        return cached;
+    }
+    cached = [HPStateLoad() copy];
+    cachedStat = st;
+    return cached;
+}
+
+#pragma mark - Live speed
+
+/// Below this a device reads as idle rather than as a speed: 10 Kbps is the
+/// background chatter of a phone in a pocket.
+static const uint64_t kHPIdleBytesPerSecond = 1250;
+
+/// How fast data is moving right now, in bytes per second.
+///
+/// Keys: @"up" and @"down" (NSNumber) for the hotspot as a whole, and
+/// @"devices" (MAC -> @{@"up", @"down"}). Empty until there are two samples to
+/// compare, which on opening a pane takes one refresh.
+///
+/// The same two instruments as the usage figures, for the same reasons. The
+/// hotspot's own counters (ap1) say how fast, and are read here directly, so
+/// the figure is live to the pane's 3s refresh. The daemon's tap says who, and
+/// only changes on its 10s flush, so each device's share is the one from its
+/// last flush: devices always add up to the hotspot's speed.
+static NSDictionary *HPLiveSpeed(void) {
+    static NSDictionary *cached;
+    static CFAbsoluteTime cachedAt;
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    // Several rows ask per refresh; they should all get the same answer.
+    if (cached && now - cachedAt < 2.0) return cached;
+
+    static uint64_t prevIn, prevOut;
+    static CFAbsoluteTime prevAt;
+    static NSString *prevNames;
+
+    NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
+    NSArray<NSString *> *names = HPHotspotInterfaceNames(ifaces);
+    uint64_t in = 0, out = 0;
+    for (NSString *name in names) {
+        NSDictionary *i = HPInterfaceNamed(ifaces, name);
+        in  += [i[HPIfInBytesKey] unsignedLongLongValue];
+        out += [i[HPIfOutBytesKey] unsignedLongLongValue];
+    }
+    NSString *key = [names componentsJoinedByString:@","];
+
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    double dt = now - prevAt;
+    // Only between two close samples of the same interfaces with no counter
+    // reset between them. A pane reopened after a while starts over rather
+    // than reporting the average since it was last open.
+    BOOL comparable = names.count && prevAt > 0 && dt >= 0.5 && dt <= 15.0 &&
+                      [key isEqualToString:prevNames] && in >= prevIn && out >= prevOut;
+    uint64_t up = 0, down = 0;
+    if (comparable) {
+        // ap1 ibytes are what clients sent (upload), obytes what they received.
+        up   = (uint64_t)((double)(in - prevIn) / dt);
+        down = (uint64_t)((double)(out - prevOut) / dt);
+        result[@"up"] = @(up);
+        result[@"down"] = @(down);
+    }
+    prevIn = in; prevOut = out; prevAt = now; prevNames = key;
+
+    // Who: each device's share of what the tap saw between its last two flushes.
+    static NSDictionary *prevCounters;
+    static NSDate *prevFlush, *sharesAt;
+    static NSDictionary<NSString *, NSNumber *> *shareUp, *shareDown;
+    NSDictionary *counters = HPCopyDaemonCounters();
+    NSDate *flush = counters[@"updated"];
+    if (counters && flush && ![flush isEqualToDate:prevFlush]) {
+        if (prevCounters) {
+            NSMutableDictionary *u = [NSMutableDictionary dictionary];
+            NSMutableDictionary *d = [NSMutableDictionary dictionary];
+            for (NSString *dir in @[ @"up", @"down" ]) {
+                NSDictionary *cur = counters[dir], *old = prevCounters[dir];
+                for (NSString *mac in cur) {
+                    uint64_t c = [cur[mac] unsignedLongLongValue];
+                    uint64_t o = [old[mac] unsignedLongLongValue];
+                    if (c > o) ([dir isEqualToString:@"up"] ? u : d)[mac] = @(c - o);
+                }
+            }
+            shareUp = u; shareDown = d; sharesAt = flush;
+        }
+        prevCounters = counters;
+        prevFlush = flush;
+    }
+
+    if (comparable && sharesAt && [[NSDate date] timeIntervalSinceDate:sharesAt] < 25.0) {
+        NSMutableSet *macSet = [NSMutableSet setWithArray:shareUp.allKeys];
+        [macSet addObjectsFromArray:shareDown.allKeys];
+        NSArray<NSString *> *macs = [macSet.allObjects sortedArrayUsingSelector:@selector(compare:)];
+        size_t n = macs.count;
+        if (n) {
+            NSMutableData *buf = [NSMutableData dataWithLength:4 * n * sizeof(uint64_t)];
+            uint64_t *wUp = buf.mutableBytes, *wDown = wUp + n, *gotUp = wDown + n, *gotDown = gotUp + n;
+            for (size_t i = 0; i < n; i++) {
+                wUp[i]   = [shareUp[macs[i]] unsignedLongLongValue];
+                wDown[i] = [shareDown[macs[i]] unsignedLongLongValue];
+            }
+            HPApportion(up, wUp, n, gotUp);
+            HPApportion(down, wDown, n, gotDown);
+            NSMutableDictionary *devices = [NSMutableDictionary dictionary];
+            for (size_t i = 0; i < n; i++) {
+                devices[macs[i]] = @{ @"up" : @(gotUp[i]), @"down" : @(gotDown[i]) };
+            }
+            result[@"devices"] = devices;
+        }
+    }
+
+    cached = result;
+    cachedAt = now;
+    return cached;
+}
+
+/// "↓ 12.4 Mbps  ↑ 1.1 Mbps", or nil while there is no figure.
+static NSString *HPSpeedText(NSDictionary *speed) {
+    if (!speed[@"down"]) return nil;
+    return [NSString stringWithFormat:@"↓ %@  ↑ %@",
+                                      HPFormatRate([speed[@"down"] unsignedLongLongValue]),
+                                      HPFormatRate([speed[@"up"] unsignedLongLongValue])];
+}
+
+/// One device's speed for its row in the list: the busier direction only, and
+/// nothing at all while it is idle.
+static NSString *HPDeviceSpeedText(NSString *mac) {
+    NSDictionary *d = HPLiveSpeed()[@"devices"][mac];
+    uint64_t up = [d[@"up"] unsignedLongLongValue], down = [d[@"down"] unsignedLongLongValue];
+    if (up + down < kHPIdleBytesPerSecond) return nil;
+    return down >= up ? [NSString stringWithFormat:@"↓ %@", HPFormatRate(down)]
+                      : [NSString stringWithFormat:@"↑ %@", HPFormatRate(up)];
+}
+
+#pragma mark - Days
+
+/// The bytes a device (or, for a nil MAC, the whole hotspot) used on each day
+/// of this period, as {key, date, bytes} oldest first, up to and including
+/// today, plus @"earlier" — whatever the period holds from before daily
+/// figures began — so the days always add up to the period's total.
+static NSDictionary *HPPeriodDays(NSString *mac) {
+    NSDictionary *state = HPUIState();
+    NSDate *start = state[HPStPeriodStartKey];
+    NSDate *nextReset = state[HPStNextResetKey];
+    NSDate *now = [NSDate date];
+    if (![start isKindOfClass:[NSDate class]]) start = now;
+    if (![nextReset isKindOfClass:[NSDate class]]) nextReset = now;
+
+    NSDictionary *source;
+    uint64_t total;
+    if (mac) {
+        NSDictionary *record = state[HPStDevicesSeenKey][mac];
+        source = record[@"days"];
+        total = [record[@"bytes"] unsignedLongLongValue];
+    } else {
+        source = state[HPStDailyKey];
+        total = [state[HPStTotalBytesKey] unsignedLongLongValue];
+    }
+    if (![source isKindOfClass:[NSDictionary class]]) source = @{};
+
+    NSCalendar *cal = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    cal.timeZone = [NSTimeZone localTimeZone];
+    NSString *todayKey = HPDayKey(now);
+    NSMutableArray *days = [NSMutableArray array];
+    NSMutableArray *future = [NSMutableArray array];
+    uint64_t sum = 0;
+    NSDate *day = HPDateForDayKey(HPDayKey(start));
+    // A period is a month; the bound only guards against a malformed state.
+    for (int i = 0; day && [day compare:nextReset] == NSOrderedAscending && i < 40; i++) {
+        NSString *key = HPDayKey(day);
+        id entry = source[key];
+        uint64_t bytes = [entry isKindOfClass:[NSDictionary class]]
+            ? [entry[@"up"] unsignedLongLongValue] + [entry[@"down"] unsignedLongLongValue]
+            : [entry unsignedLongLongValue];
+        if ([key compare:todayKey] == NSOrderedDescending) {
+            [future addObject:@{ @"key" : key, @"date" : day }];
+        } else {
+            [days addObject:@{ @"key" : key, @"date" : day, @"bytes" : @(bytes) }];
+            sum += bytes;
+        }
+        day = [cal dateByAddingUnit:NSCalendarUnitDay value:1 toDate:day options:0];
+    }
+    return @{
+        @"days"    : days,
+        @"future"  : future,
+        @"earlier" : @(total > sum ? total - sum : 0),
+        @"since"   : state[HPStDailySinceKey] ?: now,
+    };
+}
+
+static uint64_t HPTodayBytes(NSString *mac) {
+    NSDictionary *state = HPUIState();
+    NSString *today = HPDayKey([NSDate date]);
+    if (mac) return [state[HPStDevicesSeenKey][mac][@"days"][today] unsignedLongLongValue];
+    NSDictionary *day = state[HPStDailyKey][today];
+    return [day[@"up"] unsignedLongLongValue] + [day[@"down"] unsignedLongLongValue];
+}
+
+/// A time of day, in the phone's own 12- or 24-hour style.
+static NSString *HPTimeTitle(NSInteger minutes) {
+    static NSDateFormatter *fmt;
+    if (!fmt) {
+        fmt = [NSDateFormatter new];
+        fmt.dateStyle = NSDateFormatterNoStyle;
+        fmt.timeStyle = NSDateFormatterShortStyle;
+    }
+    NSDate *at = [[NSCalendar currentCalendar] dateBySettingHour:minutes / 60
+                                                          minute:minutes % 60
+                                                          second:0
+                                                          ofDate:[NSDate date]
+                                                         options:0];
+    return at ? [fmt stringFromDate:at]
+              : [NSString stringWithFormat:@"%02ld:%02ld", (long)(minutes / 60), (long)(minutes % 60)];
+}
 
 /// The usage pane while it is on screen, so an action can refresh its rows.
 static __weak PSListController *gUsagePaneRef;
@@ -71,6 +301,19 @@ static HPSettingsHelper *gHelper;
 }
 
 - (id)enabledValue:(PSSpecifier *)spec { return HPConfig()[HPCfgEnabledKey]; }
+
+- (id)alertJoinsValue:(PSSpecifier *)spec { return HPConfig()[HPCfgAlertJoinsKey]; }
+- (void)setAlertJoinsValue:(id)value specifier:(PSSpecifier *)spec {
+    [self writeConfigValue:@([value boolValue]) forKey:HPCfgAlertJoinsKey];
+}
+
+- (id)askFirstValue:(PSSpecifier *)spec { return HPConfig()[HPCfgAskFirstKey]; }
+- (void)setAskFirstValue:(id)value specifier:(PSSpecifier *)spec {
+    [self writeConfigValue:@([value boolValue]) forKey:HPCfgAskFirstKey];
+    // Switching it off releases every held device, and that should not wait
+    // for the next sample.
+    HPPostTickRequest();
+}
 - (void)setEnabledValue:(id)value specifier:(PSSpecifier *)spec {
     [self writeConfigValue:@([value boolValue]) forKey:HPCfgEnabledKey];
 }
@@ -103,22 +346,31 @@ static HPSettingsHelper *gHelper;
 #pragma mark Stat getters
 
 - (id)usedValue:(PSSpecifier *)spec {
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     return HPFormatBytes([state[HPStTotalBytesKey] unsignedLongLongValue]);
 }
 
 - (id)downloadedValue:(PSSpecifier *)spec {
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     return HPFormatBytes([state[HPStDownloadBytesKey] unsignedLongLongValue]);
 }
 
 - (id)uploadedValue:(PSSpecifier *)spec {
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     return HPFormatBytes([state[HPStUploadBytesKey] unsignedLongLongValue]);
 }
 
+- (id)speedValue:(PSSpecifier *)spec {
+    if (!HPHotspotIsActive(HPCopyInterfaces())) return @"—";
+    return HPSpeedText(HPLiveSpeed()) ?: @"Measuring…";
+}
+
+- (id)todayValue:(PSSpecifier *)spec {
+    return [NSString stringWithFormat:@"Today · %@", HPFormatBytes(HPTodayBytes(nil))];
+}
+
 - (id)remainingValue:(PSSpecifier *)spec {
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     double limitGB = [HPConfig()[HPCfgLimitGBKey] doubleValue];
     if (limitGB <= 0) return @"No limit";
 
@@ -131,7 +383,7 @@ static HPSettingsHelper *gHelper;
 }
 
 - (id)resetsValue:(PSSpecifier *)spec {
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     NSDate *next = state[HPStNextResetKey];
     if (!next) return @"—";
 
@@ -222,22 +474,33 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
     NSString *mac = [spec propertyForKey:@"hpMac"];
     if (!mac.length) return ip;
 
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     NSDictionary *seen = state[HPStDevicesSeenKey] ?: @{};
     uint64_t bytes = [seen[mac][@"bytes"] unsignedLongLongValue];
-    NSString *base = (bytes == 0) ? ip
+    // While a device is moving data its speed says more than its address,
+    // which is on its own page anyway.
+    NSString *where = HPDeviceSpeedText(mac) ?: ip;
+    NSString *base = (bytes == 0) ? where
                                   : [NSString stringWithFormat:@"%@ · %@",
-                                              HPFormatBytes(bytes), ip];
-    // A blocked device says so right in the list, so it need not be opened to
-    // confirm the cut-off is in place.
+                                              HPFormatBytes(bytes), where];
+    // A blocked or held device says so right in the list, so it need not be
+    // opened to see why nothing loads on it.
+    NSString *reason = state[HPStBlockReasonsKey][mac];
+    if ([reason isEqualToString:HPBlockReasonPending]) {
+        return [base stringByAppendingString:@" · waiting"];
+    }
     if ([(state[HPStBlockedMacsKey] ?: @[]) containsObject:mac]) {
+        if ([reason isEqualToString:HPBlockReasonSchedule])
+            return [base stringByAppendingString:@" · blocked hours"];
+        if ([reason isEqualToString:HPBlockReasonDaily])
+            return [base stringByAppendingString:@" · daily limit"];
         return [base stringByAppendingString:@" · blocked"];
     }
     return base;
 }
 
 - (id)seenValue:(PSSpecifier *)spec {
-    NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSDictionary *seen = HPUIState()[HPStDevicesSeenKey] ?: @{};
     NSUInteger withUsage = 0;
     for (NSString *mac in seen) {
         if ([seen[mac][@"bytes"] unsignedLongLongValue] > 0) withUsage++;
@@ -254,7 +517,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
 /// The one line the stock Personal Hotspot pane shows: usage at a glance, with
 /// everything else behind the disclosure.
 - (id)summaryValue:(PSSpecifier *)spec {
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     uint64_t total = [state[HPStTotalBytesKey] unsignedLongLongValue];
     NSArray<NSDictionary *> *ifaces = HPCopyInterfaces();
     NSUInteger devices = HPCopyPresentDevices(HPHotspotInterfaceNames(ifaces)).count;
@@ -283,7 +546,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
         return;
     }
 
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     uint64_t total = [state[HPStTotalBytesKey] unsignedLongLongValue];
 
     UIAlertController *alert = [UIAlertController
@@ -345,7 +608,7 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
 /// few seconds: visibly reloading, losing scroll position, and interrupting
 /// anything being typed.
 - (NSString *)structureSignature {
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     NSMutableString *sig = [NSMutableString string];
 
     // Toggling tracking adds or removes every row below the switch.
@@ -382,13 +645,22 @@ static BOOL HPHotspotIsActiveSmoothed(NSArray<NSDictionary *> *ifaces) {
 /// What the existing rows DISPLAY. A change here only needs the value cells
 /// re-read through their getters, which is invisible next to a rebuild.
 - (NSString *)valueSignature {
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     NSMutableString *sig = [NSMutableString string];
     [sig appendFormat:@"%@|%@|", state[HPStTotalBytesKey], state[HPStIfNamesKey]];
     // Blocking a device changes no byte total, so its row would not otherwise
     // refresh to show (or drop) the "blocked" marker.
     [sig appendFormat:@"b:%@|",
                       [(state[HPStBlockedMacsKey] ?: @[]) componentsJoinedByString:@","]];
+    [sig appendFormat:@"r:%@|", state[HPStBlockReasonsKey]];
+
+    // Speeds, as displayed: a refresh when a figure a row shows has moved, and
+    // none while every figure reads the same.
+    NSDictionary *speed = HPLiveSpeed();
+    [sig appendFormat:@"s:%@|", HPSpeedText(speed)];
+    for (NSString *mac in [[speed[@"devices"] allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+        [sig appendFormat:@"%@=%@,", mac, HPDeviceSpeedText(mac)];
+    }
 
     // The status row is computed live, so its inputs belong in the signature —
     // otherwise switching the hotspot on would not refresh the row until some
@@ -450,6 +722,36 @@ static PSSpecifier *HPChoiceRow(NSString *title, SEL getter, SEL setter,
     [spec setProperty:@YES forKey:@"hpOurs"];
     [spec setProperty:@YES forKey:@"hpValueRow"];
     [spec setValues:values titles:titles];
+    return spec;
+}
+
+static PSSpecifier *HPSwitchRow(id target, NSString *title, SEL getter, SEL setter) {
+    PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:title
+                                                       target:target
+                                                          set:setter
+                                                          get:getter
+                                                       detail:nil
+                                                         cell:PSSwitchCell
+                                                         edit:nil];
+    [spec setProperty:@YES forKey:@"hpOurs"];
+    return spec;
+}
+
+/// "Daily Usage", showing today's figure, which opens the day-by-day chart for
+/// the hotspot (nil MAC) or one device. A title-value row rather than a link
+/// cell for the same reason as the device rows: only this cell shows a value.
+static PSSpecifier *HPHistoryRow(id target, SEL getter, NSString *mac) {
+    PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:@"Daily Usage"
+                                                       target:target
+                                                          set:NULL
+                                                          get:getter
+                                                       detail:nil
+                                                         cell:PSTitleValueCell
+                                                         edit:nil];
+    [spec setProperty:@YES forKey:@"hpOurs"];
+    [spec setProperty:@YES forKey:@"hpValueRow"];
+    [spec setProperty:@YES forKey:@"hpHistoryRow"];
+    if (mac) [spec setProperty:mac forKey:@"hpMac"];
     return spec;
 }
 
@@ -559,9 +861,11 @@ static NSArray *HPBuildBodySpecifiers(void) {
     [specs addObject:HPValueRow(@"Used", @selector(usedValue:))];
     [specs addObject:HPValueRow(@"Downloaded", @selector(downloadedValue:))];
     [specs addObject:HPValueRow(@"Uploaded", @selector(uploadedValue:))];
+    [specs addObject:HPValueRow(@"Speed", @selector(speedValue:))];
     [specs addObject:HPValueRow(@"Remaining", @selector(remainingValue:))];
     [specs addObject:HPValueRow(@"Resets On", @selector(resetsValue:))];
     [specs addObject:HPValueRow(@"Hotspot", @selector(statusValue:))];
+    [specs addObject:HPHistoryRow(helper, @selector(todayValue:), nil)];
 
     // --- devices ----------------------------------------------------------
     NSArray *devices = HPLiveConnectedDevices();
@@ -572,6 +876,19 @@ static NSArray *HPBuildBodySpecifiers(void) {
     [specs addObject:devicesGroup];
     [specs addObjectsFromArray:HPBuildDeviceRows()];
     [specs addObject:HPValueRow(@"Seen this period", @selector(seenValue:))];
+
+    // --- new devices ------------------------------------------------------
+    [specs addObject:HPGroup(@"NEW DEVICES",
+                             @"A device counts as new the first time it ever joins. "
+                              "With Ask Before Allowing on, a new device gets no internet "
+                              "until you allow it — from its alert, or from its page "
+                              "above. Devices that joined before are not affected.")];
+    [specs addObject:HPSwitchRow(helper, @"Alert When a Device Joins",
+                                 @selector(alertJoinsValue:),
+                                 @selector(setAlertJoinsValue:specifier:))];
+    [specs addObject:HPSwitchRow(helper, @"Ask Before Allowing",
+                                 @selector(askFirstValue:),
+                                 @selector(setAskFirstValue:specifier:))];
 
     // --- limit ------------------------------------------------------------
     [specs addObject:HPGroup(@"DATA LIMIT",
@@ -629,7 +946,331 @@ static NSArray *HPBuildBodySpecifiers(void) {
     return specs;
 }
 
+#pragma mark - Daily chart
+
+/// Day-by-day usage for the period as bars: one per day, today's end of the
+/// period still to come shown as empty slots, so the chart reads as "how far
+/// through the month, and how it went". Tap a bar to read its figure; the
+/// table under the chart lists every day as text.
+@interface HPDailyChartView : UIView
+@property (nonatomic, copy) NSArray<NSDictionary *> *days;    // {key, date, bytes}, oldest first
+@property (nonatomic, copy) NSArray<NSDictionary *> *future;  // {key, date}
+@property (nonatomic) NSInteger selected;                     // index into days
+@end
+
+@implementation HPDailyChartView
+
+static const CGFloat kHPChartTop = 38.0, kHPChartBottom = 24.0, kHPChartSide = 20.0;
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        self.backgroundColor = [UIColor clearColor];
+        self.contentMode = UIViewContentModeRedraw;
+        self.isAccessibilityElement = YES;
+        self.accessibilityTraits = UIAccessibilityTraitAdjustable;
+        _selected = -1;
+        [self addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                           action:@selector(hpTap:)]];
+    }
+    return self;
+}
+
+- (CGRect)hpPlot {
+    return CGRectMake(kHPChartSide, kHPChartTop,
+                      MAX(0, self.bounds.size.width - 2 * kHPChartSide),
+                      MAX(0, self.bounds.size.height - kHPChartTop - kHPChartBottom));
+}
+
+- (NSUInteger)hpSlots { return self.days.count + self.future.count; }
+
+- (void)hpSelect:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.days.count) return;
+    self.selected = index;
+    [self setNeedsDisplay];
+    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, nil);
+}
+
+- (void)hpTap:(UITapGestureRecognizer *)tap {
+    NSUInteger n = [self hpSlots];
+    CGRect plot = [self hpPlot];
+    if (!n || plot.size.width <= 0) return;
+    CGFloat x = [tap locationInView:self].x - plot.origin.x;
+    [self hpSelect:(NSInteger)floor(x / (plot.size.width / n))];
+}
+
+// Swipe up/down with VoiceOver steps through the days.
+- (void)accessibilityIncrement { [self hpSelect:self.selected + 1]; }
+- (void)accessibilityDecrement { [self hpSelect:self.selected - 1]; }
+
++ (NSString *)hpDay:(NSDate *)date template:(NSString *)template {
+    NSDateFormatter *fmt = [NSDateFormatter new];
+    [fmt setLocalizedDateFormatFromTemplate:template];
+    return [fmt stringFromDate:date];
+}
+
+- (NSString *)hpCallout {
+    if (self.selected < 0 || self.selected >= (NSInteger)self.days.count) return nil;
+    NSDictionary *day = self.days[self.selected];
+    return [NSString stringWithFormat:@"%@ · %@",
+                                      [HPDailyChartView hpDay:day[@"date"] template:@"EEEdMMM"],
+                                      HPFormatBytes([day[@"bytes"] unsignedLongLongValue])];
+}
+
+- (NSString *)accessibilityLabel { return @"Daily usage chart"; }
+- (NSString *)accessibilityValue { return [self hpCallout]; }
+
+- (void)hpDrawText:(NSString *)text at:(CGPoint)point align:(NSTextAlignment)align
+              font:(UIFont *)font color:(UIColor *)color {
+    NSDictionary *attrs = @{ NSFontAttributeName : font, NSForegroundColorAttributeName : color };
+    CGSize size = [text sizeWithAttributes:attrs];
+    CGFloat x = point.x;
+    if (align == NSTextAlignmentCenter) x -= size.width / 2;
+    else if (align == NSTextAlignmentRight) x -= size.width;
+    x = MAX(kHPChartSide, MIN(x, self.bounds.size.width - kHPChartSide - size.width));
+    [text drawAtPoint:CGPointMake(x, point.y) withAttributes:attrs];
+}
+
+- (void)drawRect:(CGRect)rect {
+    NSUInteger n = [self hpSlots];
+    CGRect plot = [self hpPlot];
+    if (!n || plot.size.width <= 0 || plot.size.height <= 0) return;
+
+    CGFloat scale = self.window.screen.scale ?: [UIScreen mainScreen].scale;
+    CGFloat hairline = 1.0 / scale;
+    CGFloat slot = plot.size.width / n;
+    CGFloat gap = slot >= 6 ? 2 : 1;            // a surface gap between bars
+    CGFloat barW = MAX(1, slot - gap);
+    CGFloat baseY = CGRectGetMaxY(plot);
+    UIColor *accent = self.tintColor;
+    UIFont *small = [UIFont systemFontOfSize:11];
+
+    uint64_t max = 0;
+    for (NSDictionary *d in self.days) max = MAX(max, [d[@"bytes"] unsignedLongLongValue]);
+
+    // One recessive gridline at the tallest bar, labelled, so heights read as
+    // amounts without an axis.
+    if (max > 0) {
+        [[UIColor separatorColor] setFill];
+        UIRectFill(CGRectMake(plot.origin.x, plot.origin.y, plot.size.width, hairline));
+        [self hpDrawText:HPFormatBytes(max)
+                      at:CGPointMake(CGRectGetMaxX(plot), plot.origin.y - 16)
+                   align:NSTextAlignmentRight font:small color:[UIColor secondaryLabelColor]];
+    }
+    [[UIColor separatorColor] setFill];
+    UIRectFill(CGRectMake(plot.origin.x, baseY, plot.size.width, hairline));
+
+    for (NSUInteger i = 0; i < self.days.count; i++) {
+        uint64_t bytes = [self.days[i][@"bytes"] unsignedLongLongValue];
+        if (!bytes || !max) continue;
+        CGFloat h = MAX(2, (CGFloat)((double)bytes / (double)max) * plot.size.height);
+        CGRect bar = CGRectMake(plot.origin.x + i * slot + gap / 2, baseY - h, barW, h);
+        CGFloat r = MIN(4, barW / 2);
+        UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:bar
+                                                   byRoundingCorners:(UIRectCornerTopLeft | UIRectCornerTopRight)
+                                                         cornerRadii:CGSizeMake(r, r)];
+        // One hue; the selected day at full strength, the rest lighter.
+        [((NSInteger)i == self.selected ? accent : [accent colorWithAlphaComponent:0.45]) setFill];
+        [path fill];
+    }
+
+    // The rest of the period, still to come.
+    [[UIColor quaternaryLabelColor] setFill];
+    for (NSUInteger j = 0; j < self.future.count; j++) {
+        NSUInteger i = self.days.count + j;
+        CGRect tick = CGRectMake(plot.origin.x + i * slot + gap / 2, baseY - 2, barW, 2);
+        [[UIBezierPath bezierPathWithRoundedRect:tick cornerRadius:1] fill];
+    }
+
+    NSString *callout = [self hpCallout];
+    if (callout) {
+        [self hpDrawText:callout at:CGPointMake(plot.origin.x, 8) align:NSTextAlignmentLeft
+                    font:[UIFont systemFontOfSize:15 weight:UIFontWeightSemibold]
+                   color:[UIColor labelColor]];
+    } else if (!max) {
+        [self hpDrawText:@"No usage yet this period" at:CGPointMake(plot.origin.x, 8)
+                   align:NSTextAlignmentLeft font:[UIFont systemFontOfSize:15]
+                   color:[UIColor secondaryLabelColor]];
+    }
+
+    // Dates under the first and last day of the period, and under the day
+    // selected when there is room for it between them.
+    NSDate *first = self.days.firstObject[@"date"] ?: self.future.firstObject[@"date"];
+    NSDate *last = self.future.lastObject[@"date"] ?: self.days.lastObject[@"date"];
+    CGFloat labelY = baseY + 5;
+    if (first) {
+        [self hpDrawText:[HPDailyChartView hpDay:first template:@"dMMM"]
+                      at:CGPointMake(plot.origin.x, labelY) align:NSTextAlignmentLeft
+                    font:small color:[UIColor secondaryLabelColor]];
+    }
+    if (last && n > 1) {
+        [self hpDrawText:[HPDailyChartView hpDay:last template:@"dMMM"]
+                      at:CGPointMake(CGRectGetMaxX(plot), labelY) align:NSTextAlignmentRight
+                    font:small color:[UIColor secondaryLabelColor]];
+    }
+    if (self.selected > 0 && self.selected < (NSInteger)n - 1) {
+        CGFloat cx = plot.origin.x + (self.selected + 0.5) * slot;
+        if (cx - plot.origin.x > 56 && CGRectGetMaxX(plot) - cx > 56) {
+            [self hpDrawText:[HPDailyChartView hpDay:self.days[self.selected][@"date"] template:@"dMMM"]
+                          at:CGPointMake(cx, labelY) align:NSTextAlignmentCenter
+                        font:small color:[UIColor labelColor]];
+        }
+    }
+}
+
+@end
+
+/// The chart, and every day of the period as a row beneath it.
+@interface HPHistoryController : UITableViewController
+- (instancetype)initWithMac:(NSString *)mac title:(NSString *)title style:(UITableViewStyle)style;
+@end
+
+@implementation HPHistoryController {
+    NSString *_mac;
+    NSDictionary *_data;
+    NSArray<NSDictionary *> *_rows;
+    HPDailyChartView *_chart;
+    NSTimer *_timer;
+}
+
+- (instancetype)initWithMac:(NSString *)mac title:(NSString *)title style:(UITableViewStyle)style {
+    if ((self = [super initWithStyle:style])) {
+        _mac = [mac copy];
+        self.title = title;
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    _chart = [[HPDailyChartView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 210)];
+    self.tableView.tableHeaderView = _chart;
+    [self hpReload];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat width = self.tableView.bounds.size.width;
+    if (fabs(_chart.frame.size.width - width) > 0.5) {
+        _chart.frame = CGRectMake(0, 0, width, 210);
+        self.tableView.tableHeaderView = _chart;   // re-set, or the table keeps the old size
+    }
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [_timer invalidate];
+    __weak typeof(self) weakSelf = self;
+    _timer = [NSTimer scheduledTimerWithTimeInterval:10.0 repeats:YES block:^(NSTimer *t) {
+        [weakSelf hpReload];
+    }];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [_timer invalidate];
+    _timer = nil;
+}
+
+- (void)hpReload {
+    @try {
+        _data = HPPeriodDays(_mac);
+        NSArray *days = _data[@"days"];
+        BOOL follow = _chart.selected < 0 || _chart.selected >= (NSInteger)_chart.days.count - 1;
+        _chart.days = days;
+        _chart.future = _data[@"future"];
+        // Stay on the day the user picked; otherwise keep following today.
+        if (follow || _chart.selected >= (NSInteger)days.count) _chart.selected = (NSInteger)days.count - 1;
+        [_chart setNeedsDisplay];
+
+        NSMutableArray *rows = [NSMutableArray array];
+        NSDate *since = _data[@"since"];
+        NSString *sinceKey = HPDayKey(since);
+        for (NSDictionary *day in days.reverseObjectEnumerator) {
+            // Days before daily figures began have no figure of their own; they
+            // are covered by the "Before" row instead of reading as zero.
+            if ([day[@"key"] compare:sinceKey] == NSOrderedAscending) continue;
+            [rows addObject:day];
+        }
+        if ([_data[@"earlier"] unsignedLongLongValue] > 0) {
+            [rows addObject:@{ @"earlier" : @YES, @"bytes" : _data[@"earlier"], @"date" : since }];
+        }
+        _rows = rows;
+        [self.tableView reloadData];
+    } @catch (NSException *e) {
+        HPLog(@"daily usage reload failed: %@", e);
+    }
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return _rows.count;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return @"BY DAY";
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    NSString *text = _mac
+        ? @"What this device used each day this period, in this phone's time. The days add up to its Total."
+        : @"What your hotspot shared each day this period, in this phone's time. The days add up to Used.";
+    if ([_data[@"earlier"] unsignedLongLongValue] > 0) {
+        text = [text stringByAppendingFormat:@" Daily figures began on %@, when this version was "
+                                              "installed; the period's use before then is shown as one figure.",
+                                             [HPDailyChartView hpDay:_data[@"since"] template:@"dMMMM"]];
+    }
+    return text;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"day"];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"day"];
+    NSDictionary *row = _rows[indexPath.row];
+    NSString *title;
+    if ([row[@"earlier"] boolValue]) {
+        title = [NSString stringWithFormat:@"Before %@",
+                                           [HPDailyChartView hpDay:row[@"date"] template:@"dMMM"]];
+    } else {
+        NSCalendar *cal = [NSCalendar currentCalendar];
+        if ([cal isDateInToday:row[@"date"]]) title = @"Today";
+        else if ([cal isDateInYesterday:row[@"date"]]) title = @"Yesterday";
+        else title = [HPDailyChartView hpDay:row[@"date"] template:@"EEEEdMMM"];
+    }
+    cell.textLabel.text = title;
+    cell.detailTextLabel.text = HPFormatBytes([row[@"bytes"] unsignedLongLongValue]);
+    cell.selectionStyle = [row[@"earlier"] boolValue] ? UITableViewCellSelectionStyleNone
+                                                      : UITableViewCellSelectionStyleDefault;
+    return cell;
+}
+
+/// Picking a day in the list shows it on the chart.
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSDictionary *row = _rows[indexPath.row];
+    if ([row[@"earlier"] boolValue]) return;
+    NSUInteger index = [_chart.days indexOfObject:row];
+    if (index != NSNotFound) {
+        [_chart hpSelect:(NSInteger)index];
+        [tableView scrollRectToVisible:CGRectMake(0, 0, 1, 1) animated:YES];
+    }
+}
+
+@end
+
+/// Push the daily chart for the hotspot (nil) or one device over `pane`.
+static void HPPushHistory(PSListController *pane, NSString *mac, NSString *title) {
+    @try {
+        UITableViewStyle style = UITableViewStyleGrouped;
+        @try { if ([pane table]) style = [pane table].style; } @catch (NSException *e) {}
+        HPHistoryController *vc = [[HPHistoryController alloc] initWithMac:mac title:title style:style];
+        [pane.navigationController pushViewController:vc animated:YES];
+    } @catch (NSException *e) {
+        HPLog(@"daily usage push failed: %@", e);
+    }
+}
+
 #pragma mark - Per-device pane
+
+static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
 
 /// One device's own page: what it has used, and a cap that cuts it off.
 @interface HPDeviceListController : PSListController
@@ -638,6 +1279,7 @@ static NSArray *HPBuildBodySpecifiers(void) {
 @implementation HPDeviceListController {
     NSArray *_hpSpecs;
     NSString *_mac;
+    NSTimer *_hpTimer;
 }
 
 - (NSString *)hpMac {
@@ -674,7 +1316,7 @@ static NSArray *HPBuildBodySpecifiers(void) {
     // The nickname is baked into device rows and the "seen this period" record
     // by the collector, so a tick rebuilds them under the new name; do it now
     // rather than waiting for the next sample.
-    NSString *dhcp = HPStateLoad()[HPStDevicesSeenKey][[self hpMac]][@"name"];
+    NSString *dhcp = HPUIState()[HPStDevicesSeenKey][[self hpMac]][@"name"];
     self.title = HPDeviceDisplayName([self hpMac], dhcp, name.length ? name : nil);
     HPPostTickRequest();
 }
@@ -701,22 +1343,127 @@ static NSArray *HPBuildBodySpecifiers(void) {
 }
 
 - (id)hpUsedValue:(PSSpecifier *)spec {
-    NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSDictionary *seen = HPUIState()[HPStDevicesSeenKey] ?: @{};
     return HPFormatBytes([seen[[self hpMac]][@"bytes"] unsignedLongLongValue]);
 }
 
 - (id)hpDownValue:(PSSpecifier *)spec {
-    NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSDictionary *seen = HPUIState()[HPStDevicesSeenKey] ?: @{};
     return HPFormatBytes([seen[[self hpMac]][@"down"] unsignedLongLongValue]);
 }
 
 - (id)hpUpValue:(PSSpecifier *)spec {
-    NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSDictionary *seen = HPUIState()[HPStDevicesSeenKey] ?: @{};
     return HPFormatBytes([seen[[self hpMac]][@"up"] unsignedLongLongValue]);
 }
 
 - (id)hpMacValue:(PSSpecifier *)spec {
     return [self hpMac];
+}
+
+- (id)hpTodayValue:(PSSpecifier *)spec {
+    return HPFormatBytes(HPTodayBytes([self hpMac]));
+}
+
+- (id)hpDailyRowValue:(PSSpecifier *)spec {
+    return [NSString stringWithFormat:@"Today · %@", HPFormatBytes(HPTodayBytes([self hpMac]))];
+}
+
+- (id)hpSpeedValue:(PSSpecifier *)spec {
+    if (!HPHotspotIsActive(HPCopyInterfaces())) return @"—";
+    NSDictionary *speed = HPLiveSpeed();
+    if (!speed[@"down"]) return @"Measuring…";
+    NSDictionary *mine = speed[@"devices"][[self hpMac]];
+    // No share from the helper this round means this device moved nothing.
+    return HPSpeedText(mine ?: @{ @"up" : @0, @"down" : @0 });
+}
+
+#pragma mark Blocked hours and daily limit
+
+- (NSDictionary *)hpSchedule {
+    NSDictionary *all = HPConfig()[HPCfgSchedulesKey];
+    NSDictionary *one = [all isKindOfClass:[NSDictionary class]] ? all[[self hpMac]] : nil;
+    return [one isKindOfClass:[NSDictionary class]] ? one : @{};
+}
+
+- (void)hpWriteSchedule:(void (^)(NSMutableDictionary *mine))change {
+    NSString *mac = [self hpMac];
+    HPConfigUpdate(^(NSMutableDictionary *cfg) {
+        NSMutableDictionary *all = [([cfg[HPCfgSchedulesKey] isKindOfClass:[NSDictionary class]]
+                                         ? cfg[HPCfgSchedulesKey] : @{}) mutableCopy];
+        NSMutableDictionary *mine = [([all[mac] isKindOfClass:[NSDictionary class]] ? all[mac] : @{}) mutableCopy];
+        change(mine);
+        if (mine.count) all[mac] = mine;
+        else [all removeObjectForKey:mac];
+        cfg[HPCfgSchedulesKey] = all;
+    });
+    // A device inside its new hours is cut off now, not at the next sample.
+    HPPostTickRequest();
+}
+
+- (id)hpFromValue:(PSSpecifier *)spec {
+    NSNumber *from = [self hpSchedule][@"from"];
+    return from ? @([from integerValue]) : @(-1);
+}
+
+- (void)setHpFrom:(id)value specifier:(PSSpecifier *)spec {
+    NSInteger from = [value integerValue];
+    [self hpWriteSchedule:^(NSMutableDictionary *mine) {
+        if (from < 0) {
+            [mine removeAllObjects];   // Off: no blocked hours at all
+            return;
+        }
+        mine[@"from"] = @(from);
+        // A start with no end yet gets a sensible one: 07:00.
+        if (!mine[@"to"]) mine[@"to"] = @(7 * 60);
+    }];
+}
+
+- (id)hpToValue:(PSSpecifier *)spec {
+    NSNumber *to = [self hpSchedule][@"to"];
+    return @(to ? [to integerValue] : 7 * 60);
+}
+
+- (void)setHpTo:(id)value specifier:(PSSpecifier *)spec {
+    NSInteger to = [value integerValue];
+    [self hpWriteSchedule:^(NSMutableDictionary *mine) {
+        if (to >= 0) mine[@"to"] = @(to);
+    }];
+}
+
+- (id)hpDailyLimit:(PSSpecifier *)spec {
+    NSDictionary *limits = HPConfig()[HPCfgDailyLimitsKey];
+    return @([limits[[self hpMac]] doubleValue]);
+}
+
+- (void)setHpDailyLimit:(id)value specifier:(PSSpecifier *)spec {
+    NSString *mac = [self hpMac];
+    double gb = [value doubleValue];
+    HPConfigUpdate(^(NSMutableDictionary *cfg) {
+        NSMutableDictionary *limits = [([cfg[HPCfgDailyLimitsKey] isKindOfClass:[NSDictionary class]]
+                                            ? cfg[HPCfgDailyLimitsKey] : @{}) mutableCopy];
+        if (gb > 0) limits[mac] = @(gb);
+        else [limits removeObjectForKey:mac];   // No Limit also lifts today's block
+        cfg[HPCfgDailyLimitsKey] = limits;
+    });
+    HPPostTickRequest();
+}
+
+/// Let a held device on. Its row goes, since there is nothing left to decide.
+- (void)hpAllow:(PSSpecifier *)spec {
+    NSString *mac = [self hpMac];
+    HPConfigUpdate(^(NSMutableDictionary *cfg) {
+        NSMutableDictionary *approved = [([cfg[HPCfgApprovedKey] isKindOfClass:[NSDictionary class]]
+                                              ? cfg[HPCfgApprovedKey] : @{}) mutableCopy];
+        approved[mac] = @YES;
+        cfg[HPCfgApprovedKey] = approved;
+    });
+    HPLog(@"allowed %@ from Settings", mac);
+    HPPostTickRequest();
+    @try {
+        PSSpecifier *group = [spec propertyForKey:@"hpHeldGroup"];
+        [self removeContiguousSpecifiers:(group ? @[ group, spec ] : @[ spec ]) animated:YES];
+    } @catch (NSException *e) {}
 }
 
 - (id)hpBlockedValue:(PSSpecifier *)spec {
@@ -745,8 +1492,15 @@ static NSArray *HPBuildBodySpecifiers(void) {
 
 - (id)hpStatusValue:(PSSpecifier *)spec {
     NSString *mac = [self hpMac];
-    BOOL wantBlocked = [(HPStateLoad()[HPStBlockedMacsKey] ?: @[]) containsObject:mac];
-    BOOL manual = [HPConfig()[HPCfgManualBlocksKey][mac] boolValue];
+    NSDictionary *state = HPUIState();
+    BOOL wantBlocked = [(state[HPStBlockedMacsKey] ?: @[]) containsObject:mac];
+    NSString *reason = state[HPStBlockReasonsKey][mac];
+    BOOL manual = [reason isEqualToString:HPBlockReasonManual] ||
+                  (!reason && [HPConfig()[HPCfgManualBlocksKey][mac] boolValue]);
+
+    // Held for approval says so whether or not the route is in yet: the
+    // device is waiting on the user either way.
+    if ([reason isEqualToString:HPBlockReasonPending]) return @"Waiting for your approval";
 
     if (wantBlocked) {
         // "Blocked" is a claim about the routing table, and only the daemon
@@ -758,7 +1512,17 @@ static NSArray *HPBuildBodySpecifiers(void) {
         NSDate *flush = HPDaemonLastFlush();
         BOOL daemonAlive = flush && [[NSDate date] timeIntervalSinceDate:flush] <= 60.0;
         if (enforced && daemonAlive) {
-            return manual ? @"Blocked — cut off by you" : @"Blocked — over its limit";
+            if (manual) return @"Blocked — cut off by you";
+            if ([reason isEqualToString:HPBlockReasonDaily]) return @"Blocked until midnight — daily limit";
+            if ([reason isEqualToString:HPBlockReasonSchedule]) {
+                NSInteger from = 0, to = 0;
+                if (HPScheduleForMac(HPConfig(), mac, &from, &to)) {
+                    return [NSString stringWithFormat:@"Blocked until %@ — blocked hours",
+                                                      HPTimeTitle(to)];
+                }
+                return @"Blocked — blocked hours";
+            }
+            return @"Blocked — over its limit";
         }
         // Not actually cut off. Name why, from the daemon's own breadcrumb, so
         // this is a lead rather than a dead end.
@@ -776,7 +1540,7 @@ static NSArray *HPBuildBodySpecifiers(void) {
 }
 
 - (id)hpAddressValue:(PSSpecifier *)spec {
-    NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSDictionary *seen = HPUIState()[HPStDevicesSeenKey] ?: @{};
     return seen[[self hpMac]][@"ip"] ?: @"—";
 }
 
@@ -802,7 +1566,7 @@ static NSArray *HPBuildBodySpecifiers(void) {
                                                          edit:nil];
     // The DHCP name shown when nothing is set, so the field reads as a rename
     // rather than an empty box.
-    NSDictionary *seenNow = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+    NSDictionary *seenNow = HPUIState()[HPStDevicesSeenKey] ?: @{};
     NSString *dhcpName = seenNow[[self hpMac]][@"name"];
     if (dhcpName.length && ![dhcpName isEqualToString:[self hpMac]]) {
         [name setProperty:dhcpName forKey:@"placeholder"];
@@ -816,9 +1580,10 @@ static NSArray *HPBuildBodySpecifiers(void) {
     // Total. For a data cap only the Total matters — carriers bill both
     // directions together — but the split shows at a glance what a device is
     // actually doing.
-    NSArray<NSString *> *usageTitles = @[ @"Total", @"Downloaded", @"Uploaded" ];
+    NSArray<NSString *> *usageTitles = @[ @"Total", @"Downloaded", @"Uploaded", @"Today", @"Speed" ];
     SEL usageGetters[] = { @selector(hpUsedValue:), @selector(hpDownValue:),
-                           @selector(hpUpValue:) };
+                           @selector(hpUpValue:), @selector(hpTodayValue:),
+                           @selector(hpSpeedValue:) };
     for (NSUInteger i = 0; i < usageTitles.count; i++) {
         PSSpecifier *row = [PSSpecifier preferenceSpecifierNamed:usageTitles[i]
                                                           target:self
@@ -828,8 +1593,10 @@ static NSArray *HPBuildBodySpecifiers(void) {
                                                             cell:PSTitleValueCell
                                                             edit:nil];
         [row setProperty:@NO forKey:@"enabled"];
+        [row setProperty:@YES forKey:@"hpValueRow"];
         [specs addObject:row];
     }
+    [specs addObject:HPHistoryRow(self, @selector(hpDailyRowValue:), [self hpMac])];
 
     [specs addObject:HPGroup(@"IDENTITY", nil)];
     PSSpecifier *address = [PSSpecifier preferenceSpecifierNamed:@"IP Address"
@@ -863,7 +1630,30 @@ static NSArray *HPBuildBodySpecifiers(void) {
                                                            cell:PSTitleValueCell
                                                            edit:nil];
     [status setProperty:@NO forKey:@"enabled"];
+    [status setProperty:@YES forKey:@"hpValueRow"];
     [specs addObject:status];
+
+    // Held for approval: the decision, right here. Built only while it is
+    // pending; allowing removes the row.
+    if ([HPUIState()[HPStBlockReasonsKey][[self hpMac]] isEqualToString:HPBlockReasonPending]) {
+        PSSpecifier *heldGroup =
+            HPGroup(@"NEW DEVICE",
+                    @"This device joined while Ask Before Allowing was on, so it "
+                     "has no internet until you allow it. To keep it off, turn on "
+                     "Block from Hotspot below.");
+        [specs addObject:heldGroup];
+        PSSpecifier *allow = [PSSpecifier preferenceSpecifierNamed:@"Allow on Hotspot"
+                                                            target:self
+                                                               set:NULL
+                                                               get:NULL
+                                                            detail:nil
+                                                              cell:PSButtonCell
+                                                              edit:nil];
+        [allow setTarget:self];
+        [allow setButtonAction:@selector(hpAllow:)];
+        [allow setProperty:heldGroup forKey:@"hpHeldGroup"];
+        [specs addObject:allow];
+    }
 
     [specs addObject:HPGroup(@"ACCESS",
                              @"Blocking cuts this device off from the internet "
@@ -881,9 +1671,10 @@ static NSArray *HPBuildBodySpecifiers(void) {
     [specs addObject:block];
 
     [specs addObject:HPGroup(@"DEVICE LIMIT",
-                             @"When this device passes its limit, the hotspot stops "
+                             @"When this device passes its Data Limit, the hotspot stops "
                               "routing to it until the period resets or you set the "
-                              "limit back to No Limit. Other devices are unaffected.")];
+                              "limit back to No Limit. A Daily Limit works the same way "
+                              "and lifts at midnight. Other devices are unaffected.")];
 
     // Values are GB, but the sub-1 GB steps are exact binary fractions rather
     // than decimal ones so their labels land on round numbers: 0.1 GB rendered
@@ -923,6 +1714,69 @@ static NSArray *HPBuildBodySpecifiers(void) {
     [limit setValues:values titles:titles];
     [specs addObject:limit];
 
+    // Per day: the same shape of list, smaller steps. Resets at midnight.
+    NSMutableArray *dailyValues = [@[ @0, @(50 / 1024.0), @(100 / 1024.0), @(250 / 1024.0),
+                                      @(500 / 1024.0), @1, @2, @3, @5 ] mutableCopy];
+    double currentDaily = [HPConfig()[HPCfgDailyLimitsKey][[self hpMac]] doubleValue];
+    BOOL dailyListed = NO;
+    for (NSNumber *v in dailyValues) {
+        if (fabs(v.doubleValue - currentDaily) < 1e-9) { dailyListed = YES; break; }
+    }
+    if (!dailyListed && currentDaily > 0) {
+        [dailyValues addObject:@(currentDaily)];
+        [dailyValues sortUsingSelector:@selector(compare:)];
+    }
+    NSMutableArray *dailyTitles = [NSMutableArray array];
+    for (NSNumber *v in dailyValues) {
+        double gb = v.doubleValue;
+        if (gb == 0) [dailyTitles addObject:@"No Limit"];
+        else if (gb < 1) [dailyTitles addObject:[NSString stringWithFormat:@"%.0f MB a day", gb * 1024]];
+        else [dailyTitles addObject:[NSString stringWithFormat:@"%g GB a day", gb]];
+    }
+    PSSpecifier *daily = [PSSpecifier preferenceSpecifierNamed:@"Daily Limit"
+                                                        target:self
+                                                           set:@selector(setHpDailyLimit:specifier:)
+                                                           get:@selector(hpDailyLimit:)
+                                                        detail:[PSListItemsController class]
+                                                          cell:PSLinkListCell
+                                                          edit:nil];
+    [daily setValues:dailyValues titles:dailyTitles];
+    [specs addObject:daily];
+
+    // Blocked hours: every day, in half-hour steps.
+    [specs addObject:HPGroup(@"BLOCKED HOURS",
+                             @"Every day, in this phone's time zone. Hours that end earlier "
+                              "than they start run overnight: 22:00 until 07:00 cuts this "
+                              "device off through the night.")];
+    NSMutableArray *fromValues = [NSMutableArray arrayWithObject:@(-1)];
+    NSMutableArray *fromTitles = [NSMutableArray arrayWithObject:@"Off"];
+    NSMutableArray *toValues = [NSMutableArray array];
+    NSMutableArray *toTitles = [NSMutableArray array];
+    for (NSInteger m = 0; m < 24 * 60; m += 30) {
+        [fromValues addObject:@(m)];
+        [fromTitles addObject:HPTimeTitle(m)];
+        [toValues addObject:@(m)];
+        [toTitles addObject:HPTimeTitle(m)];
+    }
+    PSSpecifier *from = [PSSpecifier preferenceSpecifierNamed:@"Block From"
+                                                       target:self
+                                                          set:@selector(setHpFrom:specifier:)
+                                                          get:@selector(hpFromValue:)
+                                                       detail:[PSListItemsController class]
+                                                         cell:PSLinkListCell
+                                                         edit:nil];
+    [from setValues:fromValues titles:fromTitles];
+    [specs addObject:from];
+    PSSpecifier *until = [PSSpecifier preferenceSpecifierNamed:@"Until"
+                                                        target:self
+                                                           set:@selector(setHpTo:specifier:)
+                                                           get:@selector(hpToValue:)
+                                                        detail:[PSListItemsController class]
+                                                          cell:PSLinkListCell
+                                                          edit:nil];
+    [until setValues:toValues titles:toTitles];
+    [specs addObject:until];
+
     _hpSpecs = specs;
     @try {
         [self setValue:specs forKey:@"_specifiers"];
@@ -936,9 +1790,64 @@ static NSArray *HPBuildBodySpecifiers(void) {
         NSDictionary *nicknames = HPConfig()[HPCfgNicknamesKey];
         NSString *nick = [nicknames isKindOfClass:[NSDictionary class]]
                              ? nicknames[[self hpMac]] : nil;
-        NSDictionary *seen = HPStateLoad()[HPStDevicesSeenKey] ?: @{};
+        NSDictionary *seen = HPUIState()[HPStDevicesSeenKey] ?: @{};
         self.title = HPDeviceDisplayName([self hpMac], seen[[self hpMac]][@"name"], nick);
     } @catch (NSException *e) {}
+}
+
+/// Keep Today, Speed and Status current while the page is open.
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [_hpTimer invalidate];
+    __weak typeof(self) weakSelf = self;
+    _hpTimer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *t) {
+        [weakSelf hpRefreshValues];
+    }];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [_hpTimer invalidate];
+    _hpTimer = nil;
+}
+
+- (void)hpRefreshValues {
+    @try {
+        UITableView *table = [self table];
+        if (table.isDragging || table.isDecelerating || table.isTracking) return;
+        for (UITableViewCell *cell in table.visibleCells) {
+            if (HPViewHoldsFirstResponderFwd(cell)) return;   // the name is being typed
+        }
+        for (PSSpecifier *spec in [self specifiers]) {
+            if ([[spec propertyForKey:@"hpValueRow"] boolValue]) [self reloadSpecifier:spec animated:NO];
+        }
+    } @catch (NSException *e) {
+        HPLog(@"device page refresh failed: %@", e);
+    }
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    @try {
+        PSSpecifier *spec = [self specifierAtIndexPath:indexPath];
+        if ([[spec propertyForKey:@"hpHistoryRow"] boolValue]) {
+            [tableView deselectRowAtIndexPath:indexPath animated:YES];
+            HPPushHistory(self, [self hpMac], self.title ?: @"Daily Usage");
+            return;
+        }
+    } @catch (NSException *e) {
+        HPLog(@"device page tap failed: %@", e);
+    }
+    [super tableView:tableView didSelectRowAtIndexPath:indexPath];
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+    @try {
+        if ([[[self specifierAtIndexPath:indexPath] propertyForKey:@"hpHistoryRow"] boolValue]) {
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
+    } @catch (NSException *e) {}
+    return cell;
 }
 
 @end
@@ -947,7 +1856,7 @@ static NSArray *HPBuildBodySpecifiers(void) {
 /// clients come and go, so it is the only part ever rebuilt.
 static NSArray *HPBuildDeviceRows(void) {
     HPSettingsHelper *helper = [HPSettingsHelper shared];
-    NSDictionary *state = HPStateLoad();
+    NSDictionary *state = HPUIState();
     NSMutableArray *specs = [NSMutableArray array];
     NSArray *devices = HPLiveConnectedDevices();
 
@@ -1164,6 +2073,11 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
     didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     @try {
         PSSpecifier *spec = [self specifierAtIndexPath:indexPath];
+        if ([[spec propertyForKey:@"hpHistoryRow"] boolValue]) {
+            [tableView deselectRowAtIndexPath:indexPath animated:YES];
+            HPPushHistory(self, nil, @"Daily Usage");
+            return;
+        }
         if ([[spec propertyForKey:@"hpDeviceRow"] boolValue]) {
             [tableView deselectRowAtIndexPath:indexPath animated:YES];
             HPDeviceListController *device = [[HPDeviceListController alloc] init];
@@ -1175,6 +2089,16 @@ static BOOL HPViewHoldsFirstResponderFwd(UIView *view);
         HPLog(@"device row tap failed: %@", e);
     }
     [super tableView:tableView didSelectRowAtIndexPath:indexPath];
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+    @try {
+        if ([[[self specifierAtIndexPath:indexPath] propertyForKey:@"hpHistoryRow"] boolValue]) {
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
+    } @catch (NSException *e) {}
+    return cell;
 }
 
 /// Add or remove everything the tracking switch governs.

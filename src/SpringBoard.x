@@ -35,40 +35,130 @@
 static NSTimer *gCollectorTimer;
 static dispatch_queue_t gCollectorQueue;
 static UIWindow *gAlertWindow;
+static NSMutableArray<UIAlertController *> *gAlertQueue;
 static dispatch_source_t gRouteSource;
 static int gRouteFD = -1;
+
+static void HPCollectorSample(void);
+
+/// Present the next queued alert, if none is on screen. Main thread only.
+static void HPPresentNextAlert(void) {
+    @try {
+        if (gAlertWindow || !gAlertQueue.count) return;
+        UIAlertController *alert = gAlertQueue.firstObject;
+        [gAlertQueue removeObjectAtIndex:0];
+
+        gAlertWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        gAlertWindow.windowLevel = UIWindowLevelAlert + 100;
+        gAlertWindow.rootViewController = [UIViewController new];
+        gAlertWindow.hidden = NO;
+        [gAlertWindow.rootViewController presentViewController:alert animated:YES completion:nil];
+    } @catch (NSException *e) {
+        HPLog(@"alert failed: %@", e);
+        gAlertWindow = nil;
+    }
+}
+
+/// One button of an alert: its title, style, and what it does (may be nil).
+static UIAlertAction *HPAlertAction(NSString *title, UIAlertActionStyle style,
+                                    void (^handler)(void)) {
+    return [UIAlertAction actionWithTitle:title style:style handler:^(UIAlertAction *a) {
+        @try {
+            if (handler) handler();
+        } @catch (NSException *e) {
+            HPLog(@"alert action failed: %@", e);
+        }
+        gAlertWindow.hidden = YES;
+        gAlertWindow = nil;
+        HPPresentNextAlert();
+    }];
+}
 
 /// A plain UIKit alert on a window of our own. Deliberately not BulletinBoard:
 /// this depends on no private class, so there is nothing to break on a
 /// firmware where the notification internals differ.
-static void HPShowAlert(NSString *title, NSString *message) {
+///
+/// Alerts queue rather than drop: a device held for approval that nobody is
+/// told about would simply sit there with no internet.
+static void HPShowAlertWithActions(NSString *title, NSString *message,
+                                   NSArray *(^makeActions)(void),
+                                   NSInteger preferred) {
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
-            if (gAlertWindow) return; // one at a time
-
-            gAlertWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-            gAlertWindow.windowLevel = UIWindowLevelAlert + 100;
-            gAlertWindow.rootViewController = [UIViewController new];
-            gAlertWindow.hidden = NO;
-
+            if (!gAlertQueue) gAlertQueue = [NSMutableArray array];
             UIAlertController *alert =
                 [UIAlertController alertControllerWithTitle:title
                                                     message:message
                                              preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"OK"
-                                                     style:UIAlertActionStyleDefault
-                                                   handler:^(UIAlertAction *a) {
-                gAlertWindow.hidden = YES;
-                gAlertWindow = nil;
-            }]];
-            [gAlertWindow.rootViewController presentViewController:alert
-                                                          animated:YES
-                                                        completion:nil];
+            NSArray<UIAlertAction *> *actions = makeActions();
+            for (UIAlertAction *action in actions) [alert addAction:action];
+            if (preferred >= 0 && preferred < (NSInteger)actions.count) {
+                alert.preferredAction = actions[preferred];
+            }
+            [gAlertQueue addObject:alert];
+            HPPresentNextAlert();
         } @catch (NSException *e) {
             HPLog(@"alert failed: %@", e);
-            gAlertWindow = nil;
         }
     });
+}
+
+static void HPShowAlert(NSString *title, NSString *message) {
+    HPShowAlertWithActions(title, message, ^{
+        return @[ HPAlertAction(@"OK", UIAlertActionStyleDefault, nil) ];
+    }, 0);
+}
+
+/// Write a decision about one device to the config, then sample at once so it
+/// takes effect while the alert is still fading.
+static void HPDecide(NSString *mac, BOOL allow) {
+    HPConfigUpdate(^(NSMutableDictionary *cfg) {
+        NSMutableDictionary *approved = [(cfg[HPCfgApprovedKey] ?: @{}) mutableCopy];
+        approved[mac] = @YES;
+        cfg[HPCfgApprovedKey] = approved;
+        if (!allow) {
+            NSMutableDictionary *blocks = [(cfg[HPCfgManualBlocksKey] ?: @{}) mutableCopy];
+            blocks[mac] = @YES;
+            cfg[HPCfgManualBlocksKey] = blocks;
+        }
+    });
+    HPLog(@"%@ %@ from its alert", allow ? @"allowed" : @"blocked", mac);
+    HPCollectorSample();
+}
+
+/// A device seen for the first time. Held ones need an answer; the rest are
+/// news, shown only if the user wants to be told.
+static void HPAnnounceJoined(NSDictionary *device) {
+    NSString *mac = device[@"mac"];
+    NSString *name = device[@"name"] ?: mac;
+    NSString *ip = [device[@"ip"] length] ? device[@"ip"] : nil;
+    NSString *who = ip ? [NSString stringWithFormat:@"“%@” (%@)", name, ip]
+                       : [NSString stringWithFormat:@"“%@”", name];
+
+    if ([device[@"pending"] boolValue]) {
+        HPShowAlertWithActions(@"Allow New Device?",
+            [NSString stringWithFormat:@"%@ joined your hotspot. It has no internet "
+                                        "until you allow it.\n\nYou can also decide later "
+                                        "in Settings › Personal Hotspot › Hotspot Usage.", who],
+            ^{
+                return @[
+                    HPAlertAction(@"Block", UIAlertActionStyleDestructive, ^{ HPDecide(mac, NO); }),
+                    HPAlertAction(@"Later", UIAlertActionStyleCancel, nil),
+                    HPAlertAction(@"Allow", UIAlertActionStyleDefault, ^{ HPDecide(mac, YES); }),
+                ];
+            }, 2);
+        return;
+    }
+
+    if (![HPConfig()[HPCfgAlertJoinsKey] boolValue]) return;
+    HPShowAlertWithActions(@"New Device on Your Hotspot",
+        [NSString stringWithFormat:@"%@ joined your hotspot for the first time.", who],
+        ^{
+            return @[
+                HPAlertAction(@"Block", UIAlertActionStyleDestructive, ^{ HPDecide(mac, NO); }),
+                HPAlertAction(@"OK", UIAlertActionStyleDefault, nil),
+            ];
+        }, 1);
 }
 
 static void HPCollectorSample(void) {
@@ -99,6 +189,10 @@ static void HPCollectorSample(void) {
                                 HPFormatBytes(total), limitGB]);
             }
 
+            if (events & HPTickEventJoined) {
+                for (NSDictionary *device in result[HPTickJoinedKey]) HPAnnounceJoined(device);
+            }
+
             if (events & HPTickEventBlocked) {
                 NSArray *names = result[HPTickBlockedKey];
                 HPLog(@"blocked: %@", [names componentsJoinedByString:@", "]);
@@ -107,6 +201,17 @@ static void HPCollectorSample(void) {
                                 @"%@ reached its data limit and can no longer use the "
                                  "hotspot. It is allowed again when the period resets, "
                                  "or when you clear its limit.",
+                                [names componentsJoinedByString:@", "]]);
+            }
+
+            if (events & HPTickEventDailyLimit) {
+                NSArray *names = result[HPTickDailyKey];
+                HPLog(@"daily limit: %@", [names componentsJoinedByString:@", "]);
+                HPShowAlert(@"Daily Limit Reached",
+                            [NSString stringWithFormat:
+                                @"%@ used its data for today and can no longer use the "
+                                 "hotspot. It is allowed again at midnight, or when you "
+                                 "raise its daily limit.",
                                 [names componentsJoinedByString:@", "]]);
             }
 
